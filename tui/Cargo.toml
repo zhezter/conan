@@ -1,0 +1,20 @@
+[package]
+name = "conan"
+description = "TUI Client for Conan"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "conan"
+path = "src/main.rs"
+doctest = false
+
+[dependencies]
+conan-protocol.workspace = true
+conan-database.workspace = true
+
+[lints]
+workspace = true

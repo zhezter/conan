@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["tui", "server", "database", "protocol"]
+
+[workspace.package]
+authors = ["grishma <grishmadev@proton.me>"]
+version = "1.0.0"
+license = "MIT"
+edition = "2024"
+rust-version = "1.90"
+
+[workspace.dependencies]
+conan-protocol = { path = "protocol/" }
+conan-database = { path = "database/" }
+
+[profile.release]
+lto = true
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+correctness = { level = "warn", priority = -1 }
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

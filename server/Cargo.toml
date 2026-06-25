@@ -1,0 +1,18 @@
+[package]
+name = "conan-server"
+description = "Daemon Server for Conan"
+authors.workspace = true
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "conan-server"
+path = "src/main.rs"
+doctest = false
+
+[dependencies]
+
+[lints]
+workspace = true
