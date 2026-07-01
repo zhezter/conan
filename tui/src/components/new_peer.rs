@@ -4,27 +4,28 @@ use ratatui::{
     style::Style,
     symbols::{border, line},
     text::Line,
-    widgets::{Block, Borders, Widget},
+    widgets::{Block, Borders},
 };
 
-pub fn render_new_peer_block(f: &mut Frame<'_>, input: &str, area: Rect) {
-    let input = if input.is_empty() {
-        "Enter peer's Address"
-    } else {
-        input
-    };
+pub fn render_new_peer_block(f: &mut Frame<'_>, input: &str, cursor_pos: &usize, area: Rect) {
     let text = Line::from(input)
         .alignment(HorizontalAlignment::Left)
-        .style(Style::new().light_blue().rapid_blink());
+        .style(Style::new().light_blue());
+
     let block = Block::new()
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
-        .title_top(" Peer Address ");
+        .title_top(" Peer Address ")
+        .title_bottom(Line::from(" OK<enter> ").right_aligned())
+        .title_bottom(Line::from(" Cancel<esc> ").left_aligned());
+
     let area = area
-        .centered_horizontally(Constraint::Length(60))
+        .centered_horizontally(Constraint::Length(90))
         .centered_vertically(Constraint::Length(3));
+
     let line_area = block.inner(area);
-    let cposx = line_area.x + input.len() as u16;
+    #[allow(clippy::cast_possible_truncation)]
+    let cposx = *cursor_pos as u16 + line_area.x;
     f.set_cursor_position((cposx, line_area.y));
     f.render_widget(block, area);
     f.render_widget(text, line_area);

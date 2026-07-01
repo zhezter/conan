@@ -9,6 +9,7 @@ use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, HorizontalAlignment, Layout},
     prelude::CrosstermBackend,
+    style::Style,
     symbols::border,
     text::Line,
     widgets::{Block, Borders, List, Padding},
@@ -99,26 +100,41 @@ impl App {
             .border_set(border::ROUNDED)
             .title_top(" Contact ");
 
+        let contact_style = if self.tab == Tab::Contact {
+            Style::new().light_blue()
+        } else {
+            Style::default()
+        };
         let contact_list = List::default()
             .items(["John Doe", "Jennie"])
-            .block(left_block.clone());
+            .block(left_block.clone())
+            .style(contact_style);
 
         // right chunk
-        let right_block = Block::new()
+        let chat_style = if self.tab == Tab::Chat {
+            Style::new().light_blue()
+        } else {
+            Style::default()
+        };
+        let chat_block = Block::new()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .title_top(Line::from(" Chat ").alignment(HorizontalAlignment::Center));
+            .title_top(Line::from(" Chat ").alignment(HorizontalAlignment::Center))
+            .style(chat_style);
 
         f.render_widget(contact_list, chunks[0]);
-        f.render_widget(right_block, chunks[1]);
+        f.render_widget(chat_block, chunks[1]);
         f.render_widget(main_block, area);
     }
 
     fn render(&self, f: &mut Frame<'_>) {
         match self.active_screen {
             Screen::None => {}
-            Screen::PeerInputScreen { ref input } => {
-                render_new_peer_block(f, input, f.area());
+            Screen::PeerInputScreen {
+                ref input,
+                ref cursor_pos,
+            } => {
+                render_new_peer_block(f, input, cursor_pos, f.area());
             }
         }
     }
@@ -138,22 +154,52 @@ impl App {
                             self.next_tab();
                         }
                         KeyCode::Char('a') => {
-                            self.active_screen = Screen::PeerInputScreen { input: "".into() }
+                            self.active_screen = Screen::PeerInputScreen {
+                                input: "".into(),
+                                cursor_pos: 0,
+                            }
                         }
                         _ => {}
                     },
                 },
-                Screen::PeerInputScreen { ref mut input } => match key.code {
+                Screen::PeerInputScreen {
+                    ref mut input,
+                    ref mut cursor_pos,
+                } => match key.code {
                     KeyCode::Char(ch) => {
-                        input.push(ch);
+                        input.insert(*cursor_pos, ch);
                         self.active_screen = Screen::PeerInputScreen {
                             input: input.clone(),
+                            cursor_pos: *cursor_pos + 1,
                         }
                     }
                     KeyCode::Backspace => {
-                        input.pop();
+                        if *cursor_pos > 0 {
+                            *cursor_pos -= 1;
+                            input.remove(*cursor_pos);
+                        }
                         self.active_screen = Screen::PeerInputScreen {
-                            input: input.to_string(),
+                            input: input.clone(),
+                            cursor_pos: *cursor_pos,
+                        }
+                    }
+                    KeyCode::Delete => {
+                        if (0..input.len()).contains(cursor_pos) {
+                            input.remove(*cursor_pos);
+                        }
+                        self.active_screen = Screen::PeerInputScreen {
+                            input: input.clone(),
+                            cursor_pos: *cursor_pos,
+                        }
+                    }
+                    KeyCode::Left => {
+                        if *cursor_pos > 0 {
+                            *cursor_pos -= 1;
+                        }
+                    }
+                    KeyCode::Right => {
+                        if input.len() > *cursor_pos {
+                            *cursor_pos += 1;
                         }
                     }
                     KeyCode::Enter | KeyCode::Esc => {

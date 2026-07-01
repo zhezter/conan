@@ -1,6 +1,6 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tab {
     Contact,
     Chat,
@@ -17,7 +17,7 @@ pub enum TuiCommand {
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum Screen {
-    PeerInputScreen { input: String },
+    PeerInputScreen { input: String, cursor_pos: usize },
     None,
 }
 

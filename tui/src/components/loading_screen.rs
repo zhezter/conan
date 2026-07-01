@@ -1,3 +1,1 @@
 use ratatui::{Frame, layout::Rect};
-
-pub mod new_peer;
