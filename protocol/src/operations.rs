@@ -1,12 +1,24 @@
+use std::{
+    env,
+    error::Error,
+    fs::{File, OpenOptions},
+    io::{Read, Write},
+    path::Path,
+};
+
 use bincode::config;
 use chacha20poly1305::{
     ChaCha20Poly1305, KeyInit, Nonce,
     aead::{Aead, Generate},
 };
+use ed25519_dalek::{SigningKey, ed25519::signature::rand_core::OsRng};
 use hkdf::Hkdf;
 use sha2::Sha256;
 
-use crate::{constants::ENCRYPTION_INFO, msg::Msg};
+use crate::{
+    constants::{ARTI_KEYSTORE, ARTI_PRIVATE_KEY, ENCRYPTION_INFO},
+    msg::Msg,
+};
 
 /// Encrypts a `[Msg::msg]` turned to bytes to a vec of bytes
 /// we assume `data` is just direct serialized version of the message without any kind of wrapper etc.
@@ -35,7 +47,7 @@ pub fn encrypt(
 pub fn decrypt(
     shared_secret_key: &[u8; 32],
     data: &[u8],
-) -> Result<Msg, Box<dyn std::error::Error>> {
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let nonce_bytes: [u8; 12] = match data[..12].try_into() {
         Ok(s) => s,
         Err(e) => return Err(format!("Cannot convert slice to nonce. {e}").into()),
@@ -47,7 +59,31 @@ pub fn decrypt(
     hk.expand(ENCRYPTION_INFO.as_bytes(), &mut encryption_key)?;
     let cipher = ChaCha20Poly1305::new_from_slice(&encryption_key)?;
     let decrypted_bytes = cipher.decrypt(nonce, cipher_bytes.as_ref())?;
-    let (msg, _) = bincode::serde::decode_from_slice(&decrypted_bytes, config::legacy())?;
 
-    Ok(msg)
+    Ok(decrypted_bytes)
+}
+pub fn generate_keypair() -> Result<(), Box<dyn Error>> {
+    let home_dir = env::var("HOME").unwrap();
+    let signing_path = Path::new(&home_dir).join(Path::new(ARTI_KEYSTORE));
+    if !signing_path.exists() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let mut signing_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(signing_path)?;
+        signing_file.write_all(signing_key.as_bytes())?;
+    }
+    Ok(())
+}
+pub fn signing_key() -> Result<SigningKey, Box<dyn Error>> {
+    let home_dir = env::var("HOME").unwrap();
+    let path = Path::new(&home_dir)
+        .join(Path::new(ARTI_KEYSTORE))
+        .join(ARTI_PRIVATE_KEY);
+    let mut signing_file = File::open(&path)?;
+    let mut buf = [0u8; 32];
+    signing_file.read_exact(&mut buf)?;
+    let key = SigningKey::from_bytes(&buf);
+    Ok(key)
 }

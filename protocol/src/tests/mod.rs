@@ -3,7 +3,6 @@ use ed25519_dalek::ed25519::signature::rand_core::OsRng;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::{
-    PeerConnection,
     msg::Msg,
     operations::{decrypt, encrypt},
 };
@@ -16,8 +15,10 @@ fn test_encryption() {
     let p2_private_key = EphemeralSecret::random_from_rng(OsRng);
     let p2_public_key = PublicKey::from(&p2_private_key);
     let shared_secret_key = p1_private_key.diffie_hellman(&p2_public_key);
-    let serialized_msg = bincode::serde::encode_to_vec(&msg, config::legacy()).unwrap();
+    let serialized_msg = bincode::serde::encode_to_vec(&msg, config::standard()).unwrap();
     let encrypted_text = encrypt(shared_secret_key.as_bytes(), &serialized_msg).unwrap();
     let decrypted_text = decrypt(shared_secret_key.as_bytes(), &encrypted_text).unwrap();
-    assert_eq!(msg, decrypted_text);
+    let (deserialized, _) =
+        bincode::serde::decode_from_slice(&decrypted_text, config::standard()).unwrap();
+    assert_eq!(msg, deserialized);
 }

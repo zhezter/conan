@@ -2,39 +2,36 @@ pub mod comm;
 pub mod constants;
 pub mod msg;
 pub mod operations;
+pub mod requests;
 #[cfg(test)]
 pub mod tests;
 use arti_client::{BootstrapBehavior, TorClient, TorClientConfig, config::CfgPath};
 use bincode::config;
-use constants::{BOUNDED_CHANNEL_SIZE, SELF_PORT, TOR_RELAY_LIST_URL};
+use constants::SELF_PORT;
 use ed25519_dalek::{
-    Signature, Signer, SigningKey, Verifier, VerifyingKey, ed25519::signature::rand_core::OsRng,
+    Signature, Signer, Verifier, VerifyingKey, ed25519::signature::rand_core::OsRng,
 };
 use futures::{StreamExt, stream::BoxStream};
 use msg::{Msg, PeerStatus};
-use operations::{decrypt, encrypt};
-use reqwest::Url;
 use safelog::DisplayRedacted;
-use serde::{Deserialize, Serialize};
 use std::{
     env,
     error::Error,
-    fmt::Debug,
-    fs::{File, OpenOptions},
-    io::{Read, Write},
-    path::Path,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::mpsc::{Receiver, Sender, error::SendError},
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::broadcast,
 };
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::{HsId, HsNickname, OnionServiceConfig, RendRequest, RunningOnionService};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
-use crate::constants::{ARTI_KEYSTORE, ARTI_PRIVATE_KEY};
+use crate::{
+    constants::{ARTI_KEYSTORE, ARTI_PRIVATE_KEY},
+    operations::{decrypt, encrypt, signing_key},
+};
 
 #[macro_export]
 macro_rules! debug {
@@ -52,41 +49,16 @@ pub struct PeerConnection {
     pub service: Option<Arc<RunningOnionService>>,
     pub stream: Option<BoxStream<'static, RendRequest>>,
     /// Shared secret key after diffie helmann exchange
-    shared_secret_key: [u8; 32],
-    /// Used for receiving message user sent via `local_msg_sx`
-    local_msg_rx: Option<Receiver<Vec<u8>>>,
-
-    /// Use this to send message to peer
-    pub local_msg_sx: Sender<Vec<u8>>,
-
-    /// Use this to receive message from peer
-    pub remote_msg_rx: Receiver<Vec<u8>>,
-
-    /// Used for sending messages that user push to `local_msg_sx`
-    remote_msg_sx: Sender<Vec<u8>>,
+    shared_secret_key: Arc<RwLock<[u8; 32]>>,
 
     tor_client: Option<Arc<TorClient<tor_rtcompat::PreferredRuntime>>>,
+    rem_sen: broadcast::Sender<Vec<u8>>,
+    rem_rec: broadcast::Receiver<Vec<u8>>,
+    loc_sen: broadcast::Sender<Vec<u8>>,
+    loc_rec: broadcast::Receiver<Vec<u8>>,
 }
 
 impl PeerConnection {
-    pub fn mock() -> Self {
-        let (local_msg_sx, local_msg_rx) =
-            tokio::sync::mpsc::channel::<Vec<u8>>(BOUNDED_CHANNEL_SIZE);
-        let (remote_msg_sx, remote_msg_rx) =
-            tokio::sync::mpsc::channel::<Vec<u8>>(BOUNDED_CHANNEL_SIZE);
-        Self {
-            local_msg_sx,
-            local_msg_rx: Some(local_msg_rx),
-            remote_msg_rx,
-            remote_msg_sx,
-            tor_client: None,
-            peer_addr: None,
-            self_addr: None,
-            stream: None,
-            service: None,
-            shared_secret_key: [0u8; 32],
-        }
-    }
     /// Creates a brand new circuit with Tor Relays and returns a `PeerConnection`
     /// that can be later used for chatting
     ///
@@ -119,10 +91,8 @@ impl PeerConnection {
             None => return Err("No HsId found.".into()),
         };
         println!("Server Address: {}", hsid.display_unredacted());
-        let (local_msg_sx, local_msg_rx) =
-            tokio::sync::mpsc::channel::<Vec<u8>>(BOUNDED_CHANNEL_SIZE);
-        let (remote_msg_sx, remote_msg_rx) =
-            tokio::sync::mpsc::channel::<Vec<u8>>(BOUNDED_CHANNEL_SIZE);
+        let (rem_sen, rem_rec) = tokio::sync::broadcast::channel::<Vec<u8>>(100);
+        let (loc_sen, loc_rec) = tokio::sync::broadcast::channel::<Vec<u8>>(100);
 
         // adding actual path for config file
         config_path.push_str(ARTI_PRIVATE_KEY);
@@ -132,11 +102,11 @@ impl PeerConnection {
             self_addr: Some((hsid, SELF_PORT)),
             service: Some(service),
             stream: Some(request_stream.boxed()),
-            local_msg_rx: Some(local_msg_rx),
-            local_msg_sx,
-            remote_msg_rx,
-            remote_msg_sx,
-            shared_secret_key: [0u8; 32],
+            rem_sen,
+            rem_rec,
+            loc_sen,
+            loc_rec,
+            shared_secret_key: Arc::new(RwLock::new([0u8; 32])),
             tor_client: Some(tor_client),
         })
     }
@@ -144,104 +114,34 @@ impl PeerConnection {
     /// Used to listen to incoming messages from peer and append it to `msg_rx`
     /// # Errors
     pub async fn init_server(&mut self) -> Result<(), Box<dyn Error>> {
+        debug!("Initializing Server.");
         let mut stream = self.stream.take().ok_or("No stream assigned yet.")?;
-        while let Some(rendreq) = stream.next().await {
-            if let Ok(mut s_stream_req) = rendreq.accept().await {
-                debug!("Client Connected.");
-                while let Some(streamreq) = s_stream_req.next().await {
-                    if let Ok(stream) = streamreq.accept(Connected::new_empty()).await {
-                        let (reader, writer) = tokio::io::split(stream);
-                        self.handle_stream(reader, writer).await?;
-                    }
-                }
-            }
-        }
+        // accept connections and
+        let rem_sx_clone = self.rem_sen.clone();
+        let loc_rx_clone = self.loc_rec.resubscribe();
+        let ssk_arc = Arc::clone(&self.shared_secret_key);
 
-        Ok(())
-    }
-
-    /// # Errors
-    pub async fn handle_stream<T, S>(&mut self, reader: T, writer: S) -> Result<(), Box<dyn Error>>
-    where
-        T: AsyncReadExt + Unpin + Send + 'static,
-        S: AsyncWriteExt + Unpin + Send + 'static,
-    {
-        let mut reader = reader;
-        let mut writer = writer;
-        // let (mut reader, mut writer) = tokio::io::split(stream);
-        self.connect_as_listener(&mut reader, &mut writer).await?;
-        debug!("Secret key set.");
-
-        let remote_msg_sx = self.remote_msg_sx.clone();
-        // We spawn a tokio thread to listen for incoming messages from peer
-        // we convert it to clear message and push it to remote_msg_sx
+        // spawn a thread for handling connections from network
         tokio::spawn(async move {
-            let mut final_buf = vec![];
-            let mut buf = [0u8; 4096];
             loop {
-                match reader.read(&mut buf).await {
-                    Ok(0) => {
-                        if final_buf.is_empty() {
-                            break;
-                        }
-                        _ = remote_msg_sx.send(final_buf.clone());
-                    }
-                    Ok(size) => {
-                        final_buf.extend_from_slice(&buf[..size]);
-                    }
-                    Err(e) => {
-                        eprintln!("Error found: {e}");
-                        break;
+                while let Some(rendreq) = stream.next().await {
+                    let mut stream = rendreq.accept().await.unwrap();
+                    while let Some(strreq) = stream.next().await {
+                        let stream = strreq.accept(Connected::new_empty()).await.unwrap();
+                        let (reader, writer) = tokio::io::split(stream);
+                        let ssk = Arc::clone(&ssk_arc);
+                        let rem_sx_clone = rem_sx_clone.clone();
+                        let loc_rx_clone = loc_rx_clone.resubscribe();
+                        tokio::spawn(async move {
+                            handle_stream(reader, writer, ssk, rem_sx_clone, loc_rx_clone)
+                                .await
+                                .unwrap();
+                        });
                     }
                 }
             }
         });
-        let mut local_msg_rx = self.local_msg_rx.take().ok_or("None recieved")?;
 
-        // We spawn this tread to listen for messages that the user sends to peer
-        // convert it excrypted message, and send it over the writer
-        tokio::spawn(async move {
-            while let Some(msg) = local_msg_rx.recv().await {
-                _ = writer.write_all(&msg).await;
-            }
-        });
-        Ok(())
-    }
-
-    /// Used to connect to dialer
-    ///
-    /// # Errors
-    pub async fn connect_as_listener<T, S>(
-        &mut self,
-        reader: &mut T,
-        writer: &mut S,
-    ) -> Result<(), Box<dyn Error>>
-    where
-        T: AsyncReadExt + Unpin,
-        S: AsyncWriteExt + Unpin,
-    {
-        let local_private_key = EphemeralSecret::random_from_rng(OsRng);
-        let local_public_key = PublicKey::from(&local_private_key);
-        let signing_key = self.signing_key()?;
-        let signature = signing_key.sign(local_public_key.as_bytes());
-        let msg = Msg::SignedAndPublicKey(signature.to_vec(), *local_public_key.as_bytes());
-        let shared_and_signed_key = bincode::serde::encode_to_vec(msg, config::legacy())?;
-        debug!("Sending Signature & Public Key to peer.");
-        writer.write_all(&shared_and_signed_key).await?;
-        let mut vec = Vec::new();
-        let mut buf = [0u8; 1024];
-        debug!("Reading peer's public key.");
-        while reader.read(&mut buf).await? != 0 {
-            vec.extend_from_slice(&buf);
-        }
-        debug!("Parsing peer's public key.");
-        let (recv_msg, _) = bincode::serde::decode_from_slice::<Msg, _>(&vec, config::legacy())?;
-
-        if let Msg::PublicKey(remote_public_key) = recv_msg {
-            let rpk = PublicKey::from(remote_public_key);
-            let ssk = local_private_key.diffie_hellman(&rpk);
-            self.shared_secret_key = *ssk.as_bytes();
-        }
         Ok(())
     }
 
@@ -266,26 +166,9 @@ impl PeerConnection {
     ) -> Result<PeerStatus, Box<dyn Error>> {
         self.connect_with_addr(peer_addr).await?;
         println!("Connected. Verifying integrity.");
-        let msg = self
-            .recv_raw()
-            .await
-            .ok_or("Did not receive Message from peer..")?;
-        // let mut final_buf = Vec::new();
-        // let mut buf = [0u8; 4096];
-        // loop {
-        //     match reader.read(&mut buf).await {
-        //         Ok(0) => break,
-        //         Ok(s) => {
-        //             final_buf.extend_from_slice(&buf[..s]);
-        //         }
-        //         Err(e) => {
-        //             eprintln!("Could not read buffer, {e}");
-        //             break;
-        //         }
-        //     }
-        // }
+        let msg = self.recv_raw().await?;
 
-        let (de_msg, _) = bincode::serde::decode_from_slice::<Msg, _>(&msg, config::legacy())?;
+        let (de_msg, _) = bincode::serde::decode_from_slice::<Msg, _>(&msg, config::standard())?;
         let local_private_key = EphemeralSecret::random_from_rng(OsRng);
         let mut remote_public_key = None;
         println!("Performing X25519 Handshake.");
@@ -293,13 +176,13 @@ impl PeerConnection {
 
         let local_public_key = PublicKey::from(&local_private_key);
         let msg = Msg::PublicKey(*local_public_key.as_bytes());
-        let msg_bytes = bincode::serde::encode_to_vec(msg, config::legacy())?;
-        self.send_raw(msg_bytes).await?;
+        let msg_bytes = bincode::serde::encode_to_vec(msg, config::standard())?;
+        self.send_raw(msg_bytes)?;
         println!("Handshake Complete. Performing Eliptical Diffie-Helmann key exchange.");
 
         // At this point, we know remote_public_key is filled
         if let Some(remote_public_key) = remote_public_key {
-            self.edhverify(local_private_key, remote_public_key).await?;
+            self.edhverify(local_private_key, remote_public_key)?;
             println!("Exchange Complete..");
             Ok(PeerStatus::Connected)
         } else {
@@ -313,44 +196,51 @@ impl PeerConnection {
     /// # Errors
     /// Follows `[tokio::sync::mpsc::SendError<Vec<u8>>]`
     #[inline]
-    pub async fn send_raw(&self, msg: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
-        self.local_msg_sx.send(msg).await
+    pub fn send_raw(&self, msg: Vec<u8>) -> Result<usize, broadcast::error::SendError<Vec<u8>>> {
+        self.loc_sen.send(msg)
     }
 
     /// Used to send messages `[msg::Msg]` to connected peer
     ///
     /// # Errors
-    pub async fn send(&self, msg: Msg) -> Result<(), Box<dyn Error>> {
-        let msg = bincode::serde::encode_to_vec(msg, config::legacy())?;
-        let encrypted_msg = encrypt(&self.shared_secret_key, &msg)?;
-        self.send_raw(encrypted_msg).await?;
+    /// # Panics
+    pub fn send(&self, msg: Msg) -> Result<(), Box<dyn Error>> {
+        let msg = bincode::serde::encode_to_vec(msg, config::standard())?;
+        let ssk = self.shared_secret_key.read().unwrap().to_owned();
+        let encrypted_msg = encrypt(&ssk, &msg)?;
+        self.send_raw(encrypted_msg)?;
         Ok(())
     }
 
     /// Recieves data from peer as is.
+    /// # Errors
     #[inline]
-    pub async fn recv_raw(&mut self) -> Option<Vec<u8>> {
-        self.remote_msg_rx.recv().await
+    pub async fn recv_raw(&mut self) -> Result<Vec<u8>, broadcast::error::RecvError> {
+        self.rem_rec.recv().await
     }
 
     /// Recieves decrypted `[Msg::msg]` from peer.
     ///
     /// # Errors
     /// Errors from possible corrupted decryption
+    ///
+    ///
     pub async fn recv(&mut self) -> Result<Option<Msg>, Box<dyn Error>> {
         let encr_msg = match self.recv_raw().await {
-            Some(s) => s,
-            None => return Ok(None),
+            Ok(s) => s,
+            Err(e) => return Ok(None),
         };
-        let msg = decrypt(&self.shared_secret_key, &encr_msg)?;
-        Ok(Some(msg))
+        let ssk = self.shared_secret_key.read().unwrap().to_owned();
+        let msg = decrypt(&ssk, &encr_msg)?;
+        let (decoded, _) = bincode::serde::decode_from_slice(&msg, config::standard())?;
+        Ok(Some(decoded))
     }
 
     /// Stage 1 of the 2 Stage Encryption process after tor connection
     /// Use this when reaching out to another peer
     ///
     /// # Errors
-    pub fn x25519_handshake(
+    fn x25519_handshake(
         &mut self,
         remote_public_key: &mut Option<PublicKey>,
         msg: Msg,
@@ -382,84 +272,111 @@ impl PeerConnection {
     /// Verifies the key using Eliptical diffie-helmann, and saves it in memory for further use along the chat
     ///
     /// # Errors
-    pub async fn edhverify(
+    ///
+    /// # Panics
+    pub fn edhverify(
         &mut self,
         local_private_key: EphemeralSecret,
         remote_public_key: PublicKey,
     ) -> Result<(), Box<dyn Error>> {
         let local_public_key = PublicKey::from(&local_private_key);
         let shared_secret_key = local_private_key.diffie_hellman(&remote_public_key);
-        self.send(Msg::PublicKey(*local_public_key.as_bytes()))
-            .await?;
-        self.shared_secret_key = *shared_secret_key.as_bytes();
+        self.send(Msg::PublicKey(*local_public_key.as_bytes()))?;
+        *self.shared_secret_key.write().unwrap() = *shared_secret_key.as_bytes();
 
         Ok(())
     }
 }
 
-trait ED25519 {
-    fn generate_keypair(&self) -> Result<(), Box<dyn Error>>;
-    fn signing_key(&self) -> Result<SigningKey, Box<dyn Error>>;
-}
+/// # Errors
+/// # Panics
+pub async fn handle_stream<T, S>(
+    reader: T,
+    writer: S,
+    ssk: Arc<RwLock<[u8; 32]>>,
+    rem_sx: broadcast::Sender<Vec<u8>>,
+    loc_rx: broadcast::Receiver<Vec<u8>>,
+) -> Result<(), Box<dyn Error>>
+where
+    T: AsyncReadExt + Unpin + Send + 'static,
+    S: AsyncWriteExt + Unpin + Send + 'static,
+{
+    let mut reader = reader;
+    let mut writer = writer;
+    connect_as_listener(&mut reader, &mut writer, ssk).await?;
+    debug!("Secret key set.");
 
-impl ED25519 for PeerConnection {
-    fn generate_keypair(&self) -> Result<(), Box<dyn Error>> {
-        let home_dir = env::var("HOME").unwrap();
-        let signing_path = Path::new(&home_dir).join(Path::new(ARTI_KEYSTORE));
-        if !signing_path.exists() {
-            let signing_key = SigningKey::generate(&mut OsRng);
-            let mut signing_file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(signing_path)?;
-            signing_file.write_all(signing_key.as_bytes())?;
+    let rem_sx = rem_sx.clone();
+    // We spawn a tokio thread to listen for incoming messages from peer
+    // we convert it to clear message and push it to remote_msg_sx
+    tokio::spawn(async move {
+        let mut final_buf = vec![];
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => {
+                    if final_buf.is_empty() {
+                        break;
+                    }
+                    _ = rem_sx.send(final_buf.clone());
+                    final_buf.clear();
+                }
+                Ok(size) => {
+                    final_buf.extend_from_slice(&buf[..size]);
+                }
+                Err(e) => {
+                    eprintln!("Error found: {e}");
+                    break;
+                }
+            }
         }
-        Ok(())
-    }
-    fn signing_key(&self) -> Result<SigningKey, Box<dyn Error>> {
-        // self.generate_keypair()?;
-        let home_dir = env::var("HOME").unwrap();
-        let path = Path::new(&home_dir)
-            .join(Path::new(ARTI_KEYSTORE))
-            .join(ARTI_PRIVATE_KEY);
-        let mut signing_file = File::open(&path)?;
-        let mut buf = [0u8; 32];
-        signing_file.read_exact(&mut buf)?;
-        let key = SigningKey::from_bytes(&buf);
-        Ok(key)
-    }
-}
+    });
+    let mut loc_rx = loc_rx.resubscribe();
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RelayDetail {
-    n: String,
-    f: String,
-    a: Vec<String>,
-    r: bool,
+    // We spawn this tread to listen for messages that the user sends to peer
+    // convert it excrypted message, and send it over the writer
+    tokio::spawn(async move {
+        while let Ok(cmd) = loc_rx.recv().await {
+            let encoded = bincode::serde::encode_to_vec(cmd, config::standard()).unwrap();
+            _ = writer.write_all(&encoded).await;
+        }
+    });
+    Ok(())
 }
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct TorResponse {
-    pub version: String,
-    pub build_revision: String,
-    pub relays_published: String,
-    pub relays: Vec<RelayDetail>,
-    pub bridges_published: String,
-    pub bridges: Vec<String>,
-}
-
-impl TorResponse {
-    /// Responds back with available tor relays
-    ///
-    /// ```
-    /// let relays = TorResponse::get_response()?;
-    /// ```
-    /// # Errors
-    pub async fn get_response() -> Result<TorResponse, Box<dyn Error>> {
-        let url = Url::from_str(TOR_RELAY_LIST_URL)?;
-        let text = reqwest::get(url).await?.text().await?;
-        let response: TorResponse = serde_json::from_str(&text)?;
-        Ok(response)
+/// Used to connect to dialer
+///
+/// # Errors
+/// # Panics
+pub async fn connect_as_listener<T, S>(
+    reader: &mut T,
+    writer: &mut S,
+    ssk: Arc<RwLock<[u8; 32]>>,
+) -> Result<(), Box<dyn Error>>
+where
+    T: AsyncReadExt + Unpin,
+    S: AsyncWriteExt + Unpin,
+{
+    let local_private_key = EphemeralSecret::random_from_rng(OsRng);
+    let local_public_key = PublicKey::from(&local_private_key);
+    let signing_key = signing_key()?;
+    let signature = signing_key.sign(local_public_key.as_bytes());
+    let msg = Msg::SignedAndPublicKey(signature.to_vec(), *local_public_key.as_bytes());
+    let shared_and_signed_key = bincode::serde::encode_to_vec(msg, config::standard())?;
+    debug!("Sending Signature & Public Key to peer.");
+    writer.write_all(&shared_and_signed_key).await?;
+    let mut vec = Vec::new();
+    let mut buf = [0u8; 1024];
+    debug!("Reading peer's public key.");
+    while reader.read(&mut buf).await? != 0 {
+        vec.extend_from_slice(&buf);
     }
+    debug!("Parsing peer's public key.");
+    let (recv_msg, _) = bincode::serde::decode_from_slice::<Msg, _>(&vec, config::standard())?;
+
+    if let Msg::PublicKey(remote_public_key) = recv_msg {
+        let rpk = PublicKey::from(remote_public_key);
+        let shared_secret_key = local_private_key.diffie_hellman(&rpk);
+        *ssk.write().unwrap() = *shared_secret_key.as_bytes();
+    }
+    Ok(())
 }
