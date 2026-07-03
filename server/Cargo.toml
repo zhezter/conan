@@ -18,6 +18,7 @@ conan-database.workspace = true
 tokio.workspace = true
 tor-hsservice.workspace = true
 bincode.workspace = true
+clap.workspace = true
 
 [lints]
 workspace = true

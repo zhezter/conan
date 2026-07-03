@@ -14,7 +14,7 @@ pub trait MainComponents {
     fn render_contact_list(
         &self,
         f: &mut Frame<'_>,
-        list: &Vec<&str>,
+        list: &[&str],
         idx: usize,
         area: Rect,
         selected: bool,
@@ -38,7 +38,7 @@ impl MainComponents for App {
     fn render_contact_list(
         &self,
         f: &mut Frame<'_>,
-        list: &Vec<&str>,
+        list: &[&str],
         idx: usize,
         area: Rect,
         selected: bool,

@@ -1,4 +1,5 @@
 pub mod comm;
+pub mod config;
 pub mod constants;
 pub mod msg;
 pub mod operations;
@@ -6,7 +7,7 @@ pub mod requests;
 #[cfg(test)]
 pub mod tests;
 use arti_client::{BootstrapBehavior, TorClient, TorClientConfig, config::CfgPath};
-use bincode::config;
+use bincode::config as cfg;
 use constants::SELF_PORT;
 use ed25519_dalek::{
     Signature, Signer, Verifier, VerifyingKey, ed25519::signature::rand_core::OsRng,
@@ -29,7 +30,7 @@ use tor_hsservice::{HsId, HsNickname, OnionServiceConfig, RendRequest, RunningOn
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::{
-    constants::{ARTI_KEYSTORE, ARTI_PRIVATE_KEY},
+    constants::ARTI_PRIVATE_KEY,
     operations::{decrypt, encrypt, signing_key},
 };
 
@@ -64,10 +65,10 @@ impl PeerConnection {
     ///
     /// # Errors
     /// TODO: This function still needs some additional changes
-    pub async fn create() -> Result<Self, Box<dyn Error>> {
+    pub async fn create(arti_store: &str) -> Result<Self, Box<dyn Error>> {
         let mut tor_config_builder = TorClientConfig::builder();
         let mut config_path = env::var("HOME")?;
-        config_path.push_str(ARTI_KEYSTORE);
+        config_path.push_str(arti_store);
         let storage_builder = tor_config_builder.storage();
         let cfgpath = CfgPath::new(config_path.clone());
         storage_builder.state_dir(cfgpath);
@@ -113,6 +114,8 @@ impl PeerConnection {
 
     /// Used to listen to incoming messages from peer and append it to `msg_rx`
     /// # Errors
+    ///
+    /// # Panics
     pub async fn init_server(&mut self) -> Result<(), Box<dyn Error>> {
         debug!("Initializing Server.");
         let mut stream = self.stream.take().ok_or("No stream assigned yet.")?;
@@ -168,7 +171,7 @@ impl PeerConnection {
         println!("Connected. Verifying integrity.");
         let msg = self.recv_raw().await?;
 
-        let (de_msg, _) = bincode::serde::decode_from_slice::<Msg, _>(&msg, config::standard())?;
+        let (de_msg, _) = bincode::serde::decode_from_slice::<Msg, _>(&msg, cfg::standard())?;
         let local_private_key = EphemeralSecret::random_from_rng(OsRng);
         let mut remote_public_key = None;
         println!("Performing X25519 Handshake.");
@@ -176,7 +179,7 @@ impl PeerConnection {
 
         let local_public_key = PublicKey::from(&local_private_key);
         let msg = Msg::PublicKey(*local_public_key.as_bytes());
-        let msg_bytes = bincode::serde::encode_to_vec(msg, config::standard())?;
+        let msg_bytes = bincode::serde::encode_to_vec(msg, cfg::standard())?;
         self.send_raw(msg_bytes)?;
         println!("Handshake Complete. Performing Eliptical Diffie-Helmann key exchange.");
 
@@ -205,7 +208,7 @@ impl PeerConnection {
     /// # Errors
     /// # Panics
     pub fn send(&self, msg: Msg) -> Result<(), Box<dyn Error>> {
-        let msg = bincode::serde::encode_to_vec(msg, config::standard())?;
+        let msg = bincode::serde::encode_to_vec(msg, cfg::standard())?;
         let ssk = self.shared_secret_key.read().unwrap().to_owned();
         let encrypted_msg = encrypt(&ssk, &msg)?;
         self.send_raw(encrypted_msg)?;
@@ -224,15 +227,15 @@ impl PeerConnection {
     /// # Errors
     /// Errors from possible corrupted decryption
     ///
-    ///
+    /// # Panics
     pub async fn recv(&mut self) -> Result<Option<Msg>, Box<dyn Error>> {
         let encr_msg = match self.recv_raw().await {
             Ok(s) => s,
-            Err(e) => return Ok(None),
+            Err(e) => return Err(e.into()),
         };
         let ssk = self.shared_secret_key.read().unwrap().to_owned();
         let msg = decrypt(&ssk, &encr_msg)?;
-        let (decoded, _) = bincode::serde::decode_from_slice(&msg, config::standard())?;
+        let (decoded, _) = bincode::serde::decode_from_slice(&msg, cfg::standard())?;
         Ok(Some(decoded))
     }
 
@@ -337,7 +340,7 @@ where
     // convert it excrypted message, and send it over the writer
     tokio::spawn(async move {
         while let Ok(cmd) = loc_rx.recv().await {
-            let encoded = bincode::serde::encode_to_vec(cmd, config::standard()).unwrap();
+            let encoded = bincode::serde::encode_to_vec(cmd, cfg::standard()).unwrap();
             _ = writer.write_all(&encoded).await;
         }
     });
@@ -361,7 +364,7 @@ where
     let signing_key = signing_key()?;
     let signature = signing_key.sign(local_public_key.as_bytes());
     let msg = Msg::SignedAndPublicKey(signature.to_vec(), *local_public_key.as_bytes());
-    let shared_and_signed_key = bincode::serde::encode_to_vec(msg, config::standard())?;
+    let shared_and_signed_key = bincode::serde::encode_to_vec(msg, cfg::standard())?;
     debug!("Sending Signature & Public Key to peer.");
     writer.write_all(&shared_and_signed_key).await?;
     let mut vec = Vec::new();
@@ -371,7 +374,7 @@ where
         vec.extend_from_slice(&buf);
     }
     debug!("Parsing peer's public key.");
-    let (recv_msg, _) = bincode::serde::decode_from_slice::<Msg, _>(&vec, config::standard())?;
+    let (recv_msg, _) = bincode::serde::decode_from_slice::<Msg, _>(&vec, cfg::standard())?;
 
     if let Msg::PublicKey(remote_public_key) = recv_msg {
         let rpk = PublicKey::from(remote_public_key);

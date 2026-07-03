@@ -9,7 +9,7 @@ use crate::{
 };
 
 pub trait Keys {
-    async fn manage_keys(&mut self) -> std::io::Result<()>;
+    fn manage_keys(&mut self) -> impl Future<Output = std::io::Result<()>>;
 }
 
 impl Keys for App {

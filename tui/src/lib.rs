@@ -3,18 +3,12 @@ pub mod functions;
 pub mod matches;
 use std::{
     error::Error,
-    fs::File,
     io::{Cursor, Stdout},
-    path::Path,
     time::{Duration, Instant},
 };
 
 use bincode::config;
-use conanprotocol::{
-    comm::enums::{IPCCmd, IPCRes, encode},
-    constants::DAEMON_SOCKET,
-};
-use crossterm::event::{self, Event, KeyCode};
+use conanprotocol::comm::enums::{IPCCmd, IPCRes, encode};
 use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, HorizontalAlignment, Layout},
@@ -35,7 +29,7 @@ use crate::{
         welcome::WelcomeScreen,
     },
     functions::keys::Keys,
-    matches::{Screen, Tab, TuiCommand, get_tuicmd},
+    matches::{Screen, Tab},
 };
 
 pub struct App {
@@ -55,11 +49,8 @@ pub struct App {
 
 impl App {
     /// # Errors
-    pub async fn create() -> std::io::Result<Self> {
-        if !Path::new(DAEMON_SOCKET).exists() {
-            File::create_new(DAEMON_SOCKET)?;
-        }
-        let stream = UnixStream::connect(DAEMON_SOCKET).await?;
+    pub async fn create(socket_path: &str) -> std::io::Result<Self> {
+        let stream = UnixStream::connect(socket_path).await?;
         let (cmd_sx, cmd_rx) = tokio::sync::broadcast::channel::<IPCCmd>(100);
         let (res_sx, res_rx) = tokio::sync::broadcast::channel::<IPCRes>(100);
         Ok(Self {
@@ -187,7 +178,6 @@ impl App {
     /// # Errors
     async fn send(&mut self, cmd: IPCCmd) -> std::io::Result<()> {
         let bytes = encode(cmd);
-        println!("encoded: {:?}", &bytes);
         self.stream.write_all(&bytes).await?;
         Ok(())
     }

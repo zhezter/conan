@@ -3,7 +3,6 @@ use std::{error::Error, str::FromStr};
 use conanprotocol::{
     PeerConnection,
     comm::enums::{IPCCmd, IPCRes},
-    debug,
     msg::PeerStatus,
 };
 use tor_hsservice::HsId;
@@ -26,7 +25,6 @@ pub async fn handle_cmd(
                 Ok(s) => s,
                 Err(e) => return Ok(Some(IPCRes::Error(e.to_string()))),
             };
-            debug!("Connecting to {peer_addr}...");
             let res: IPCRes = match connection.connect_as_dialer((hsid, port)).await {
                 Ok(s) => match s {
                     PeerStatus::Connected => IPCRes::Connected(peer_addr, port),

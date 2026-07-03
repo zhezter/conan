@@ -32,9 +32,9 @@ impl ConfirmScreen for App {
             .centered_vertically(Constraint::Max(5))
             .centered_horizontally(Constraint::Max(30));
         let mut options_texts = Vec::new();
-        for i in 0..options.len() {
+        for (i, o) in options.iter().enumerate() {
             let mut text = String::from(" ");
-            text.push_str(&options[i]);
+            text.push_str(o);
             text.push(' ');
             let style = if *selected == i {
                 Style::new().bg(Color::LightBlue)

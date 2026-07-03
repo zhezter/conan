@@ -14,3 +14,9 @@ pub const ARTI_PRIVATE_KEY: &str = "/keystore/hss/conan-daemon/ks_hs_id.ed25519_
 
 /// Socket Location of daemon socket for inter process communication
 pub const DAEMON_SOCKET: &str = "/var/conan/conan.socket";
+
+/// Socket Directory of daemon socket for inter process communication
+pub const DAEMON_DIRECTORY: &str = "/var/conan";
+
+/// Config File Path
+pub const CONFIG_PATH: &str = "/.conan/conan.toml";

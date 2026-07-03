@@ -3,7 +3,7 @@ use conan_server::functions::handle_cmd;
 use conanprotocol::{
     PeerConnection,
     comm::enums::{IPCCmd, IPCRes, encode},
-    constants::DAEMON_SOCKET,
+    config::parse_config,
 };
 use std::{error::Error, fs};
 use tokio::{
@@ -13,13 +13,25 @@ use tokio::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    _ = fs::remove_file(DAEMON_SOCKET);
-    let listener = UnixListener::bind(DAEMON_SOCKET)?;
-    let mut connection = PeerConnection::create().await?;
+    let config = parse_config()?;
+    let sock_path = config.socket_path.clone();
+    let mut sock_dir = sock_path.split('/').collect::<Vec<_>>();
+    sock_dir.pop();
+    _ = fs::create_dir_all(sock_dir.join(""));
+    if let Err(e) = fs::remove_file(&sock_path) {
+        println!("fs error: {e}");
+    }
+    let listener = match UnixListener::bind(&sock_path) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("Unix Error: {e}");
+            return Ok(());
+        }
+    };
+    let mut connection = PeerConnection::create(&config.arti_key_store).await?;
     loop {
-        let (mut socket, _) = match listener.accept().await {
-            Ok(s) => s,
-            Err(_) => continue,
+        let Ok((mut socket, _)) = listener.accept().await else {
+            continue;
         };
         let mut buf = [0u8; 4096];
         loop {
@@ -28,7 +40,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     break;
                 }
                 Ok(n) => {
-                    println!("recieved: {:?}", &buf[..n]);
                     let cmd = match bincode::decode_from_slice::<IPCCmd, _>(
                         &buf[..n],
                         config::standard(),
