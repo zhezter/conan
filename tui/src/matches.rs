@@ -2,7 +2,10 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tab {
-    Contact,
+    Contact {
+        list: Vec<String>,
+        active: Option<usize>,
+    },
     Chat,
     None,
 }
@@ -15,9 +18,20 @@ pub enum TuiCommand {
 }
 
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Screen {
-    PeerInputScreen { input: String, cursor_pos: usize },
+    PeerInputScreen {
+        input: String,
+        cursor_pos: usize,
+    },
+    LoadingScreen {
+        loading_text: String,
+    },
+    ConfirmScreen {
+        prompt: String,
+        options: Vec<String>,
+        idx: usize,
+    },
     None,
 }
 

@@ -1,11 +1,14 @@
 use std::error::Error;
 
 use conan::App;
+use conanprotocol::comm::enums::{IPCCmd, encode};
+use tokio::io::AsyncWriteExt;
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = ratatui::init();
-    let mut app = App::default();
-    app.manage_terminal(&mut terminal)?;
-    app.manage_keys()?;
+    let mut app = App::create().await?;
+    app.manage_terminal(&mut terminal).await?;
+
     Ok(())
 }

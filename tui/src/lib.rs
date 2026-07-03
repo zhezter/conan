@@ -1,80 +1,127 @@
+pub mod components;
+pub mod functions;
+pub mod matches;
 use std::{
     error::Error,
-    io::Stdout,
+    fs::File,
+    io::{Cursor, Stdout},
+    path::Path,
     time::{Duration, Instant},
 };
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use bincode::config;
+use conanprotocol::{
+    comm::enums::{IPCCmd, IPCRes, encode},
+    constants::DAEMON_SOCKET,
+};
+use crossterm::event::{self, Event, KeyCode};
 use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, HorizontalAlignment, Layout},
     prelude::CrosstermBackend,
-    style::Style,
-    symbols::border,
     text::Line,
-    widgets::{Block, Borders, List, Padding},
+    widgets::{Block, Borders, Padding},
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixStream,
+    sync::broadcast::{Receiver, Sender},
 };
 
 use crate::{
-    components::new_peer::render_new_peer_block,
+    components::{
+        confirmation_screen::ConfirmScreen, loading_screen::LoadingScreen,
+        main_component::MainComponents, new_peer::NewPeer, notification::Notification,
+        welcome::WelcomeScreen,
+    },
+    functions::keys::Keys,
     matches::{Screen, Tab, TuiCommand, get_tuicmd},
 };
 
-pub mod components;
-pub mod matches;
-
 pub struct App {
-    pub timer: Instant,
     pub tab: Tab,
+    pub notification: Option<(String, Instant)>,
+    /// Send commands to Daemon
+    pub cmd_sx: Sender<IPCCmd>,
+
+    /// Receive responses from Daemon
+    pub res_rx: Receiver<IPCRes>,
+    cmd_rx: Receiver<IPCCmd>,
+    res_sx: Sender<IPCRes>,
+    pub stream: UnixStream,
     pub active_screen: Screen,
     pub running: bool,
-    pub input: String,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self {
-            timer: Instant::now(),
-            tab: Tab::None,
-            active_screen: Screen::None,
-            running: true,
-            input: String::new(),
-        }
-    }
 }
 
 impl App {
     /// # Errors
-    pub fn manage_terminal(
+    pub async fn create() -> std::io::Result<Self> {
+        if !Path::new(DAEMON_SOCKET).exists() {
+            File::create_new(DAEMON_SOCKET)?;
+        }
+        let stream = UnixStream::connect(DAEMON_SOCKET).await?;
+        let (cmd_sx, cmd_rx) = tokio::sync::broadcast::channel::<IPCCmd>(100);
+        let (res_sx, res_rx) = tokio::sync::broadcast::channel::<IPCRes>(100);
+        Ok(Self {
+            tab: Tab::None,
+            notification: None,
+            stream,
+            cmd_sx,
+            res_sx,
+            cmd_rx,
+            res_rx,
+            active_screen: Screen::None,
+            running: true,
+        })
+    }
+    /// # Errors
+    pub async fn manage_terminal(
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> Result<(), Box<dyn Error>> {
         let now = Instant::now();
         let timer = Duration::from_secs(1);
+        terminal.clear()?;
         loop {
             if now.elapsed() > timer {
                 break;
             }
-            terminal.draw(|f| {
-                let area = f.area();
-                let rect = area
-                    .centered_horizontally(Constraint::Length(30))
-                    .centered_vertically(Constraint::Max(3));
-                let block = Block::new()
-                    .border_set(border::DOUBLE)
-                    .borders(Borders::ALL);
-                let line = Line::from("Welcome").alignment(HorizontalAlignment::Center);
-                let line_rect = block.inner(rect);
-                f.render_widget(line, line_rect);
-                f.render_widget(block, rect);
-            })?;
+            terminal.draw(|f| self.render_welcome(f))?;
         }
+        self.send(IPCCmd::StartServer).await?;
+        self.active_screen = Screen::LoadingScreen {
+            loading_text: "Starting Server..".to_string(),
+        };
         while self.running {
             terminal.draw(|f| {
                 self.set_layout(f);
                 self.render(f);
             })?;
-            self.manage_keys()?;
+            self.manage_keys().await?;
+            self.manage_ipc()?;
+        }
+        Ok(())
+    }
+
+    /// # Errors
+    pub fn manage_ipc(&mut self) -> Result<(), Box<dyn Error>> {
+        if let Some(res) = self.try_recv()? {
+            match res {
+                IPCRes::ServerStarted => {
+                    if let Screen::LoadingScreen { .. } = self.active_screen {
+                        self.active_screen = Screen::None;
+                        self.notification = Some(("Server Started.".to_string(), Instant::now()));
+                    }
+                }
+                IPCRes::Connected(_, _) => {
+                    if let Screen::LoadingScreen { .. } = self.active_screen {
+                        self.active_screen = Screen::None;
+                        self.notification =
+                            Some(("Connected to Peer.".to_string(), Instant::now()));
+                    }
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -94,122 +141,71 @@ impl App {
             .margin(1)
             .direction(Direction::Horizontal)
             .split(inner_block);
-
-        let left_block = Block::new()
-            .borders(Borders::ALL)
-            .border_set(border::ROUNDED)
-            .title_top(" Contact ");
-
-        let contact_style = if self.tab == Tab::Contact {
-            Style::new().light_blue()
-        } else {
-            Style::default()
+        let list = ["John Doe", "Jennie"].to_vec();
+        let selected = match self.tab {
+            Tab::Contact { .. } => true,
+            _ => false,
         };
-        let contact_list = List::default()
-            .items(["John Doe", "Jennie"])
-            .block(left_block.clone())
-            .style(contact_style);
 
+        // left chunk
+        self.render_contact_list(f, &list, 0, chunks[0], selected);
         // right chunk
-        let chat_style = if self.tab == Tab::Chat {
-            Style::new().light_blue()
-        } else {
-            Style::default()
-        };
-        let chat_block = Block::new()
-            .borders(Borders::ALL)
-            .border_set(border::ROUNDED)
-            .title_top(Line::from(" Chat ").alignment(HorizontalAlignment::Center))
-            .style(chat_style);
+        self.render_chats(f, true, chunks[1]);
 
-        f.render_widget(contact_list, chunks[0]);
-        f.render_widget(chat_block, chunks[1]);
         f.render_widget(main_block, area);
     }
 
-    fn render(&self, f: &mut Frame<'_>) {
+    fn render(&mut self, f: &mut Frame<'_>) {
+        if let Some((text, time)) = self.notification.as_ref() {
+            if time.elapsed() < Duration::from_secs(2) {
+                self.render_notification(f, text);
+            } else {
+                self.notification = None;
+            }
+        }
         match self.active_screen {
             Screen::None => {}
             Screen::PeerInputScreen {
                 ref input,
                 ref cursor_pos,
             } => {
-                render_new_peer_block(f, input, cursor_pos, f.area());
+                self.render_new_peer_block(f, input, cursor_pos);
+            }
+            Screen::LoadingScreen { ref loading_text } => {
+                self.render_loading_screen(f, loading_text);
+            }
+            Screen::ConfirmScreen {
+                ref prompt,
+                ref options,
+                ref idx,
+            } => {
+                self.render_confirmation(f, prompt, options, idx);
             }
         }
     }
 
     /// # Errors
-    pub fn manage_keys(&mut self) -> std::io::Result<()> {
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-        {
-            match self.active_screen {
-                Screen::None => match get_tuicmd(key) {
-                    TuiCommand::Quit => {
-                        self.running = false;
-                    }
-                    TuiCommand::Other(key) => match key.code {
-                        KeyCode::Tab => {
-                            self.next_tab();
-                        }
-                        KeyCode::Char('a') => {
-                            self.active_screen = Screen::PeerInputScreen {
-                                input: "".into(),
-                                cursor_pos: 0,
-                            }
-                        }
-                        _ => {}
-                    },
-                },
-                Screen::PeerInputScreen {
-                    ref mut input,
-                    ref mut cursor_pos,
-                } => match key.code {
-                    KeyCode::Char(ch) => {
-                        input.insert(*cursor_pos, ch);
-                        self.active_screen = Screen::PeerInputScreen {
-                            input: input.clone(),
-                            cursor_pos: *cursor_pos + 1,
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        if *cursor_pos > 0 {
-                            *cursor_pos -= 1;
-                            input.remove(*cursor_pos);
-                        }
-                        self.active_screen = Screen::PeerInputScreen {
-                            input: input.clone(),
-                            cursor_pos: *cursor_pos,
-                        }
-                    }
-                    KeyCode::Delete => {
-                        if (0..input.len()).contains(cursor_pos) {
-                            input.remove(*cursor_pos);
-                        }
-                        self.active_screen = Screen::PeerInputScreen {
-                            input: input.clone(),
-                            cursor_pos: *cursor_pos,
-                        }
-                    }
-                    KeyCode::Left => {
-                        if *cursor_pos > 0 {
-                            *cursor_pos -= 1;
-                        }
-                    }
-                    KeyCode::Right => {
-                        if input.len() > *cursor_pos {
-                            *cursor_pos += 1;
-                        }
-                    }
-                    KeyCode::Enter | KeyCode::Esc => {
-                        self.active_screen = Screen::None;
-                    }
-                    _ => {}
-                },
-            }
-        }
+    async fn send(&mut self, cmd: IPCCmd) -> std::io::Result<()> {
+        let bytes = encode(cmd);
+        println!("encoded: {:?}", &bytes);
+        self.stream.write_all(&bytes).await?;
         Ok(())
+    }
+
+    fn try_recv(&mut self) -> Result<Option<IPCRes>, Box<dyn Error>> {
+        let mut buf = [0u8; 4096];
+        if let Ok(n) = self.stream.try_read(&mut buf) {
+            let (res, _) = bincode::decode_from_slice(&buf[..n], config::standard())?;
+            return Ok(Some(res));
+        }
+        Ok(None)
+    }
+
+    async fn recv(&mut self) -> Result<IPCRes, Box<dyn Error>> {
+        let mut cursor = Cursor::new(Vec::<u8>::new());
+        self.stream.read_exact(cursor.get_mut()).await?;
+        let (res, _) = bincode::decode_from_slice(cursor.get_ref(), config::standard())?;
+        Ok(res)
     }
 }
 
@@ -220,8 +216,11 @@ pub trait TerminalControl {
 impl TerminalControl for App {
     fn next_tab(&mut self) {
         let new_tab = match self.tab {
-            Tab::Contact => Tab::Chat,
-            _ => Tab::Contact,
+            Tab::Contact { .. } => Tab::Chat,
+            _ => Tab::Contact {
+                list: vec!["hello".into(), "world".into()],
+                active: Some(1),
+            },
         };
         self.tab = new_tab;
     }
