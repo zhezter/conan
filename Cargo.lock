@@ -663,6 +663,7 @@ checksum = "cc14f565cf027a105f7a44ccf9e5b424348421a1d8952a8fc9d499d313107789"
 name = "conan"
 version = "1.0.0"
 dependencies = [
+ "bincode",
  "conan-database",
  "conan-protocol",
  "crossterm",
@@ -706,6 +707,13 @@ dependencies = [
 [[package]]
 name = "conan-server"
 version = "1.0.0"
+dependencies = [
+ "bincode",
+ "conan-database",
+ "conan-protocol",
+ "tokio",
+ "tor-hsservice",
+]
 
 [[package]]
 name = "concurrent-queue"
