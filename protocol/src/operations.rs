@@ -9,7 +9,7 @@ use chacha20poly1305::{
 use ed25519_dalek::SigningKey;
 use hkdf::Hkdf;
 use sha2::Sha256;
-use std::{error::Error, fs::File, io::Read, path::Path};
+use std::{error::Error, fs::File, io::Read};
 
 /// Encrypts a `[Msg::msg]` turned to bytes to a vec of bytes
 /// we assume `data` is just direct serialized version of the message without any kind of wrapper etc.
@@ -75,8 +75,9 @@ pub fn decrypt(
 /// # Errors
 pub fn signing_key() -> Result<SigningKey, Box<dyn Error>> {
     let config = parse_config()?;
-    let path = Path::new(&config.arti_key_store).join(ARTI_PRIVATE_KEY);
-    let mut signing_file = File::open(&path)?;
+    let mut key_store_path = config.arti_key_store;
+    key_store_path.push_str(ARTI_PRIVATE_KEY);
+    let mut signing_file = File::open(key_store_path)?;
     let mut buf = [0u8; 32];
     signing_file.read_exact(&mut buf)?;
     let key = SigningKey::from_bytes(&buf);

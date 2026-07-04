@@ -69,6 +69,7 @@ impl App {
     pub async fn manage_terminal(
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+        userid: &str,
     ) -> Result<(), Box<dyn Error>> {
         let now = Instant::now();
         let timer = Duration::from_secs(1);
@@ -85,7 +86,7 @@ impl App {
         };
         while self.running {
             terminal.draw(|f| {
-                self.set_layout(f);
+                self.set_layout(f, userid);
                 self.render(f);
             })?;
             self.manage_keys().await?;
@@ -117,10 +118,10 @@ impl App {
         Ok(())
     }
 
-    fn set_layout(&self, f: &mut Frame<'_>) {
+    fn set_layout(&self, f: &mut Frame<'_>, userid: &str) {
         let area = f.area();
         let main_block = Block::new()
-            .title(Line::from(" Conan ").alignment(HorizontalAlignment::Center))
+            .title(Line::from(format!(" Conan - {userid} ")).alignment(HorizontalAlignment::Center))
             .borders(Borders::NONE)
             .padding(Padding::new(1, 1, 0, 0));
 

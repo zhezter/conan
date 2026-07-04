@@ -16,7 +16,7 @@ pub async fn handle_cmd(
         IPCCmd::Tick => Some(IPCRes::Tock),
         IPCCmd::StartServer => {
             println!("Server initializing.");
-            connection.init_server().await?;
+            connection.init_server()?;
             println!("Server Initialized");
             Some(IPCRes::ServerStarted)
         }
