@@ -13,15 +13,15 @@ rust-version = "1.90"
 conan-protocol = { path = "protocol/" }
 conan-database = { path = "database/" }
 tokio = { version = "1.52.3", features = ["full"] }
-arti-client = { version = "0.43.0", features = [
+arti-client = { version = "0.44.0", features = [
   "onion-service-client",
   "onion-service-service",
 ] }
 
-tor-hsservice = "0.43.0"
-tor-rtcompat = "0.43.0"
-tor-cell = "0.43.0"
-tor-hscrypto = "0.43.0"
+tor-hsservice = "0.44.0"
+tor-rtcompat = "0.44.0"
+tor-cell = "0.44.0"
+tor-hscrypto = "0.44.0"
 tokio-rustls = "0.26.4"
 rustls = "0.23.41"
 webpki-roots = "1.0.8"
@@ -30,7 +30,7 @@ reqwest = "0.13.4"
 serde_json = "1.0.150"
 serde = { version = "1.0.228", features = ["derive"] }
 futures = "0.3.32"
-safelog = "0.8.2"
+safelog = "0.9.0"
 rand = "0.10.1"
 hkdf = "0.13.0"
 sha2 = "0.11.0"

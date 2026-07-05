@@ -13,13 +13,10 @@ pub enum PeerStatus {
     NotFound,
 }
 
-#[derive(Clone)]
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum Internal {
-    SecretKey([u8; 32]),
-    RemoteSender(Vec<u8>),
-    RemoteRecv(Vec<u8>),
-    LocalSender(Vec<u8>),
-    LocalRecv(Vec<u8>),
+    Msg(Msg),
 }
 
 #[non_exhaustive]
@@ -41,7 +38,7 @@ impl Msg {
 
     /// # Panics
     #[must_use]
-    pub fn from_bytes(&self, bytes: &[u8]) -> Self {
+    pub fn from_bytes(bytes: &[u8]) -> Self {
         let (msg, _) =
             bincode::serde::decode_from_slice::<Msg, _>(bytes, config::legacy()).unwrap();
         msg

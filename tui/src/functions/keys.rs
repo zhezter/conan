@@ -92,9 +92,9 @@ impl Keys for App {
                     _ => {}
                 },
                 Screen::ConfirmScreen {
-                    ref prompt,
                     ref options,
                     ref mut idx,
+                    ..
                 } => match key.code {
                     KeyCode::Left => {
                         if *idx == 0 {
@@ -110,7 +110,7 @@ impl Keys for App {
                             *idx += 1;
                         }
                     }
-                    KeyCode::Enter => {}
+                    // KeyCode::Enter => {}
                     _ => {}
                 },
             }

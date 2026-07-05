@@ -8,6 +8,7 @@ use serde::{Serialize, de::DeserializeOwned};
 pub enum IPCCmd {
     StartServer,
     Connect(String, u16),
+    Text(u8, String),
     Tick,
 }
 
@@ -16,6 +17,7 @@ pub enum IPCCmd {
 pub enum IPCRes {
     ServerStarted,
     Connected(String, u16),
+    Text(u8, String),
     Error(String),
     Tock,
 }

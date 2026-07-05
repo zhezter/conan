@@ -75,7 +75,5 @@ pub fn parse_config() -> Result<ConanConfig, Box<dyn std::error::Error>> {
         arti_key_store: key_store,
     };
 
-    println!("config: {res:#?}");
-
     Ok(res)
 }

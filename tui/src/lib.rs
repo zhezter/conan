@@ -134,10 +134,7 @@ impl App {
             .direction(Direction::Horizontal)
             .split(inner_block);
         let list = ["John Doe", "Jennie"].to_vec();
-        let selected = match self.tab {
-            Tab::Contact { .. } => true,
-            _ => false,
-        };
+        let selected = matches!(self.tab, Tab::Contact { .. });
 
         // left chunk
         self.render_contact_list(f, &list, 0, chunks[0], selected);
