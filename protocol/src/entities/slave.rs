@@ -1,5 +1,5 @@
 use arti_client::DataStream;
-use ed25519_dalek::{Signer, ed25519::signature::rand_core::OsRng};
+use ed25519_dalek::ed25519::signature::rand_core::OsRng;
 use std::{
     error::Error,
     sync::{Arc, RwLock},
@@ -13,7 +13,6 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 use crate::{
     comm::enums::IPCRes,
     config::parse_config,
-    debug,
     msg::Msg,
     operations::{decrypt, encrypt, signing_key},
 };
@@ -47,7 +46,10 @@ impl Slave {
                     Ok(0) => {}
                     Ok(n) => {
                         let ssk = ssk.read().unwrap();
-                        let decrypted = decrypt(&ssk, &buf[..n]).unwrap();
+                        let Ok(decrypted) = decrypt(&ssk, &buf[..n]) else {
+                            eprintln!("Found Corrupted message: {:?}", &buf[..n]);
+                            continue;
+                        };
                         let msg = Msg::from_bytes(&decrypted);
                         let msg = (0, msg);
                         _ = response_sender.send(msg);
@@ -61,6 +63,7 @@ impl Slave {
         Ok(())
     }
 
+    /// Connects to Peer as listener (Allowing Connections)
     /// # Panics
     /// # Errors
     pub async fn connect_as_listener(&mut self) -> Result<(), Box<dyn Error>> {
@@ -69,31 +72,34 @@ impl Slave {
         let local_public_key = PublicKey::from(&local_private_key);
         let signing_key = signing_key(config.arti_key_store)?;
         let signature = signing_key.sign(local_public_key.as_bytes());
-        let msg = Msg::SignedAndPublicKey(signature.to_vec(), *local_public_key.as_bytes());
-        debug!("SENDING msg:\n{:?}", msg);
+        let msg =
+            Msg::SignedAndPublicKey(signature.to_bytes().to_vec(), *local_public_key.as_bytes());
+        println!("SENDING msg: {msg:?}");
         let payload = msg.to_vec();
-        debug!("Sending Signature & Public Key to peer.");
+        println!("Sending Signature & Public Key to peer.");
         #[allow(clippy::cast_possible_truncation)]
         self.writer.write_u16(payload.len() as u16).await?;
         self.writer.write_all(&payload).await?;
         self.writer.flush().await?;
-        debug!("Reading peer's public key.");
+        println!("Reading peer's public key.");
         let Some(reader) = self.reader.as_mut() else {
             return Err("No reader found.".into());
         };
         let size = reader.read_u16().await? as usize;
-        println!("recommended size: {size}");
         let mut buf = vec![0u8; size];
         let size = reader.read_exact(&mut buf).await?;
-        debug!("Parsing peer's public key.");
+        println!("Parsing peer's public key.");
         let recv_msg = Msg::from_bytes(&buf[..size]);
-        debug!("received msg: {:?}", recv_msg);
+        println!("received msg: {recv_msg:?}");
 
-        if let Msg::PublicKey(remote_public_key) = recv_msg {
-            let rpk = PublicKey::from(remote_public_key);
-            let shared_secret_key = local_private_key.diffie_hellman(&rpk);
-            *self.shared_secret_key.write().unwrap() = *shared_secret_key.as_bytes();
-        }
+        let Msg::PublicKey(remote_public_key) = recv_msg else {
+            return Err("Did not receive remote public key. aborting.".into());
+        };
+        let rpk = PublicKey::from(remote_public_key);
+        let shared_secret_key = local_private_key.diffie_hellman(&rpk);
+        *self.shared_secret_key.write().unwrap() = *shared_secret_key.as_bytes();
+        reader.read_to_end(&mut vec![]).await?;
+        println!("Verification Complete.");
         Ok(())
     }
 

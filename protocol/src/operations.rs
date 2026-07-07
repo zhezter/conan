@@ -2,16 +2,19 @@ use crate::{
     constants::{ARTI_PRIVATE_KEY, ENCRYPTION_INFO},
     msg::Msg,
 };
+use base64::Engine;
 use chacha20poly1305::{
     ChaCha20Poly1305, KeyInit, Nonce,
     aead::{Aead, Generate},
 };
-use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use sha2::Sha256;
+use ssh_encoding::Decode;
 use std::{error::Error, fs::File, io::Read, str::FromStr};
 use tokio::io::{AsyncWriteExt, WriteHalf};
 use tor_hsservice::HsId;
+use tor_llcrypto::pk::ed25519::ExpandedKeypair;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 /// Encrypts a `[Msg::msg]` turned to bytes to a vec of bytes
@@ -76,16 +79,52 @@ pub fn decrypt(
 /// Used to retrieve signing key for self tor server
 ///
 /// # Errors
-pub fn signing_key(arti_key_store: String) -> Result<SigningKey, Box<dyn Error>> {
+/// # Panics
+pub fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<dyn Error>> {
     let mut key_store_path = arti_key_store;
     key_store_path.push_str(ARTI_PRIVATE_KEY);
     let mut signing_file = File::open(key_store_path)?;
-    let mut buf = [0u8; 32];
-    signing_file.read_exact(&mut buf)?;
-    let key = SigningKey::from_bytes(&buf);
-    Ok(key)
+    let mut content = String::new();
+    signing_file.read_to_string(&mut content)?;
+    let filtered_content = content
+        .lines()
+        .filter(|l| !l.contains("---"))
+        .collect::<String>();
+    let payload = base64::engine::general_purpose::STANDARD.decode(filtered_content)?;
+    let mut payload_slice = payload.as_slice();
+
+    let mut magic = [0u8; 15];
+    payload_slice.read_exact(&mut magic)?;
+    if &magic != b"openssh-key-v1\0" {
+        return Err("Invalid SSH magic".into());
+    }
+    let _cipher = String::decode(&mut payload_slice)?;
+    let _kdf = String::decode(&mut payload_slice)?;
+    let _kdf_opts = Vec::<u8>::decode(&mut payload_slice)?;
+    let _num_keys = u32::decode(&mut payload_slice)?;
+    let _outer_pub = Vec::<u8>::decode(&mut payload_slice)?;
+
+    // 3. Extract the isolated inner private block
+    let inner_block_bytes = Vec::<u8>::decode(&mut payload_slice)?;
+
+    let mut inner_bytes = inner_block_bytes.as_slice();
+
+    let _check1 = u32::decode(&mut inner_bytes)?;
+    let _check2 = u32::decode(&mut inner_bytes)?;
+
+    let algo_name = String::decode(&mut inner_bytes)?;
+    if &algo_name != "ed25519-expanded@spec.torproject.org" {
+        return Err("Algorithm name mismatch".into());
+    }
+
+    let priv_key = Vec::<u8>::decode(&mut inner_bytes)?;
+    let priv_key = priv_key.try_into().unwrap();
+    let expanded_key = ExpandedKeypair::from_secret_key_bytes(priv_key).unwrap();
+    Ok(expanded_key)
 }
 
+/// Performs Curve25519 Handshake
+/// # Errors
 pub fn x25519_handshake(
     remote_public_key: &mut Option<PublicKey>,
     peer_addr: &(String, u16),
@@ -97,18 +136,14 @@ pub fn x25519_handshake(
     let hsid = HsId::from_str(&peer_addr.0)?;
     let hsid_bytes = hsid.as_ref();
     let verifying_key = VerifyingKey::from_bytes(hsid_bytes)?;
-    let signature: [u8; 64] = match signature.try_into() {
-        Ok(s) => s,
-        Err(e) => {
-            return Err(format!("Cannot convert signature to Array, len {}", e.len()).into());
-        }
-    };
-    let signature = Signature::from_bytes(&signature);
+    let signature = Signature::try_from(&signature[..])?;
     verifying_key.verify(&claimed_remote_public_key, &signature)?;
     *remote_public_key = Some(PublicKey::from(claimed_remote_public_key));
     Ok(())
 }
 
+/// Performs Elliptical Diffie Hellman key exchange.
+/// # Errors
 pub async fn edhverify<T>(
     writer: &mut WriteHalf<T>,
     local_private_key: EphemeralSecret,

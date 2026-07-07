@@ -788,6 +788,7 @@ name = "conan-protocol"
 version = "1.0.0"
 dependencies = [
  "arti-client",
+ "base64",
  "bincode",
  "chacha20poly1305",
  "clap",
@@ -802,11 +803,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "ssh-encoding",
  "tokio",
  "tokio-rustls",
  "tor-cell",
  "tor-hscrypto",
  "tor-hsservice",
+ "tor-llcrypto",
  "tor-rtcompat",
  "webpki-roots",
  "x25519-dalek",
@@ -1229,7 +1232,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
- "pem-rfc7468",
+ "pem-rfc7468 0.7.0",
  "zeroize",
 ]
 
@@ -3317,6 +3320,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pem-rfc7468"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6305423e0e7738146434843d1694d621cce767262b2a86910beab705e4493d9"
+dependencies = [
+ "base64ct",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4746,13 +4758,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssh-encoding"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b54d0ed0498daf3f78d82e00e28c8eec9d75a067c4cfbcc7a0f7d0f4077749e"
+dependencies = [
+ "base64ct",
+ "pem-rfc7468 1.0.0",
+ "zeroize",
+]
+
+[[package]]
 name = "ssh-encoding-fork-arti"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0cf03c3a7ea88451ff83a129a79451fd9891d44fc76c25e916a11848b81814c"
 dependencies = [
  "base64ct",
- "pem-rfc7468",
+ "pem-rfc7468 0.7.0",
  "sha2 0.10.9",
 ]
 

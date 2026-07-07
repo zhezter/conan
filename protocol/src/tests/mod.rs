@@ -1,6 +1,12 @@
+use core::panic;
+use std::str::FromStr;
+
 use bincode::config;
-use ed25519_dalek::{Signer, ed25519::signature::rand_core::OsRng};
+use ed25519_dalek::ed25519::signature::rand_core::OsRng;
+use safelog::DisplayRedacted;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tor_hsservice::HsId;
+use tor_llcrypto::pk::ed25519::Ed25519PublicKey;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::{
@@ -28,17 +34,27 @@ fn test_cryptography() {
 async fn test_verification() {
     // assuming p1 as local peer and a listener
     // p2 as remote dialer
-    let p1_hsid = "ioys2v3i7cou4wbhongyaylpl7pffij7lnnpvfxa3uvv27wzqrgf7kid.onion";
-    let key_path = String::from("/home/grishma/.conan/user1/");
+    // this is the link that got generated on my end, and WILL be different on yours.
+    // change it when testing
+    let p1_hsid = "sg6ifrxlrrjbvslgfdodqxs27zfngheayftxhdenblpmerjcclr4raad.onion";
+    let key_path = "/home/grishma/.conan/user1";
     let (mut p1_sock, mut p2_sock) = tokio::io::duplex(100);
-    let signing_key = signing_key(key_path).unwrap();
-    let p1_private_key = EphemeralSecret::random_from_rng(OsRng);
+    let p1_signing_key = signing_key(key_path.into()).unwrap();
+    // self note: Verifying key is always the Public Key.
+    let p1_verifying_key = p1_signing_key.public_key();
 
+    let p1_private_key = EphemeralSecret::random_from_rng(OsRng);
     let p1_public_key = PublicKey::from(&p1_private_key);
 
-    let signature = signing_key.sign(p1_public_key.as_bytes());
-    let signed_public_key = Msg::SignedAndPublicKey(signature.to_vec(), p1_public_key.to_bytes());
-    let signed_public_key_bytes = signed_public_key.to_vec();
+    // verifying that verifying key actually matches signing key's verifying key.
+    let hsid = HsId::from_str(p1_hsid).unwrap();
+    let hsid_bytes = hsid.as_ref();
+    assert_eq!(hsid_bytes, p1_verifying_key.as_bytes());
+
+    // p1 preparing message to be sent to p2
+    let signature = p1_signing_key.sign(p1_public_key.as_bytes());
+    let signed_public_key_bytes =
+        Msg::SignedAndPublicKey(signature.to_bytes().to_vec(), p1_public_key.to_bytes()).to_vec();
 
     // p1 writes data to p2
     #[allow(clippy::cast_possible_truncation)]
@@ -46,6 +62,7 @@ async fn test_verification() {
         .write_u16(signed_public_key_bytes.len() as u16)
         .await
         .unwrap();
+    p1_sock.flush().await.unwrap();
     p1_sock.write_all(&signed_public_key_bytes).await.unwrap();
     p1_sock.flush().await.unwrap();
 

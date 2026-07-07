@@ -45,13 +45,12 @@ impl Manager {
     /// # Errors
     pub async fn create(msg_sender: broadcast::Sender<IPCRes>) -> Result<Self, Box<dyn Error>> {
         let config = parse_config()?;
-        let arti_store = config.arti_key_store;
         let mut tor_config_builder = TorClientConfig::builder();
         let stream_timeout_config = tor_config_builder.stream_timeouts();
         // setting timeout to 20 secs bcoz we'd rather not wait 60 secs when its destined to fail
         stream_timeout_config.connect_timeout(Duration::from_secs(20));
         let storage_builder = tor_config_builder.storage();
-        let state_path = CfgPath::new(arti_store.clone());
+        let state_path = CfgPath::new(config.arti_key_store.clone());
         let cache_path = CfgPath::new(config.cache_path);
         storage_builder.cache_dir(cache_path).state_dir(state_path);
         let tor_config = tor_config_builder.build()?;
@@ -169,12 +168,11 @@ impl Manager {
         };
         let (mut reader, mut writer) = tokio::io::split(stream);
         let size = reader.read_u16().await? as usize;
-        println!("recommended size: {size}");
         let mut buf = vec![0u8; size];
         let size = reader.read_exact(&mut buf).await?;
 
         let de_msg = Msg::from_bytes(&buf[..size]);
-        debug!("received msg: {:?}", de_msg);
+        println!("received msg: {de_msg:?}");
 
         let local_private_key = EphemeralSecret::random_from_rng(OsRng);
         let mut remote_public_key = None;
@@ -182,7 +180,7 @@ impl Manager {
         x25519_handshake(&mut remote_public_key, &peer_addr, de_msg)?;
         let local_public_key = PublicKey::from(&local_private_key);
         let msg = Msg::PublicKey(local_public_key.to_bytes());
-        debug!("SENDING msg:\n{:?}", msg);
+        println!("SENDING msg:\n{msg:?}");
         let msg_bytes = msg.to_vec();
 
         #[allow(clippy::cast_possible_truncation)]
@@ -222,6 +220,7 @@ impl Manager {
             peers.insert(idx, conn);
         }
         println!("Exchange Complete..");
+        self.msg_sender.send(IPCRes::Connected(peer_addr.0, 80))?;
         Ok(PeerStatus::Connected)
     }
 

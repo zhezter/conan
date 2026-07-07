@@ -19,7 +19,6 @@ use ratatui::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixStream,
-    sync::broadcast::{Receiver, Sender},
 };
 
 use crate::{
@@ -35,13 +34,6 @@ use crate::{
 pub struct App {
     pub tab: Tab,
     pub notification: Option<(String, Instant)>,
-    /// Send commands to Daemon
-    pub cmd_sx: Sender<IPCCmd>,
-
-    /// Receive responses from Daemon
-    pub res_rx: Receiver<IPCRes>,
-    cmd_rx: Receiver<IPCCmd>,
-    res_sx: Sender<IPCRes>,
     pub stream: UnixStream,
     pub active_screen: Screen,
     pub running: bool,
@@ -51,16 +43,10 @@ impl App {
     /// # Errors
     pub async fn create(socket_path: &str) -> std::io::Result<Self> {
         let stream = UnixStream::connect(socket_path).await?;
-        let (cmd_sx, cmd_rx) = tokio::sync::broadcast::channel::<IPCCmd>(100);
-        let (res_sx, res_rx) = tokio::sync::broadcast::channel::<IPCRes>(100);
         Ok(Self {
             tab: Tab::None,
             notification: None,
             stream,
-            cmd_sx,
-            res_sx,
-            cmd_rx,
-            res_rx,
             active_screen: Screen::None,
             running: true,
         })
@@ -186,7 +172,7 @@ impl App {
         Ok(None)
     }
 
-    async fn recv(&mut self) -> Result<IPCRes, Box<dyn Error>> {
+    async fn _recv(&mut self) -> Result<IPCRes, Box<dyn Error>> {
         let mut cursor = Cursor::new(Vec::<u8>::new());
         self.stream.read_exact(cursor.get_mut()).await?;
         let (res, _) = bincode::decode_from_slice(cursor.get_ref(), config::standard())?;
