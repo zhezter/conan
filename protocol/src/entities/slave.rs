@@ -1,5 +1,4 @@
 use arti_client::DataStream;
-use bincode::config as cfg;
 use ed25519_dalek::{Signer, ed25519::signature::rand_core::OsRng};
 use std::{
     error::Error,
@@ -13,6 +12,7 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::{
     comm::enums::IPCRes,
+    config::parse_config,
     debug,
     msg::Msg,
     operations::{decrypt, encrypt, signing_key},
@@ -61,26 +61,32 @@ impl Slave {
         Ok(())
     }
 
+    /// # Panics
+    /// # Errors
     pub async fn connect_as_listener(&mut self) -> Result<(), Box<dyn Error>> {
+        let config = parse_config()?;
         let local_private_key = EphemeralSecret::random_from_rng(OsRng);
         let local_public_key = PublicKey::from(&local_private_key);
-        let signing_key = signing_key()?;
+        let signing_key = signing_key(config.arti_key_store)?;
         let signature = signing_key.sign(local_public_key.as_bytes());
         let msg = Msg::SignedAndPublicKey(signature.to_vec(), *local_public_key.as_bytes());
         debug!("SENDING msg:\n{:?}", msg);
-        let payload = bincode::serde::encode_to_vec(msg, cfg::standard())?;
+        let payload = msg.to_vec();
         debug!("Sending Signature & Public Key to peer.");
+        #[allow(clippy::cast_possible_truncation)]
+        self.writer.write_u16(payload.len() as u16).await?;
         self.writer.write_all(&payload).await?;
         self.writer.flush().await?;
-        let mut buf = [0u8; 4096];
         debug!("Reading peer's public key.");
         let Some(reader) = self.reader.as_mut() else {
             return Err("No reader found.".into());
         };
-        let size = reader.read(&mut buf).await?;
+        let size = reader.read_u16().await? as usize;
+        println!("recommended size: {size}");
+        let mut buf = vec![0u8; size];
+        let size = reader.read_exact(&mut buf).await?;
         debug!("Parsing peer's public key.");
-        let (recv_msg, _) =
-            bincode::serde::decode_from_slice::<Msg, _>(&buf[..size], cfg::standard())?;
+        let recv_msg = Msg::from_bytes(&buf[..size]);
         debug!("received msg: {:?}", recv_msg);
 
         if let Msg::PublicKey(remote_public_key) = recv_msg {

@@ -1,2 +1,3 @@
 socket-path = "/var/conan/user1.socket"
 key-path = "/home/grishma/.conan/user1"
+cache-path = "/home/grishma/.conan/user1/cache/"

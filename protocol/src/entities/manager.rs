@@ -1,28 +1,28 @@
-use arti_client::{BootstrapBehavior, DataStream, TorClient, TorClientConfig, config::CfgPath};
-use bincode::config as cfg;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey, ed25519::signature::rand_core::OsRng};
+use arti_client::{BootstrapBehavior, TorClient, TorClientConfig, config::CfgPath};
+use ed25519_dalek::ed25519::signature::rand_core::OsRng;
 use futures::{StreamExt, stream::BoxStream};
 use safelog::DisplayRedacted;
 use std::{
     collections::HashMap,
     error::Error,
-    str::FromStr,
-    sync::{Arc, Mutex, RwLock, mpsc},
+    sync::{Arc, Mutex, RwLock},
+    time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, WriteHalf},
+    io::{AsyncReadExt, AsyncWriteExt},
     sync::broadcast,
 };
 use tor_cell::relaycell::msg::Connected;
-use tor_hsservice::{HsId, HsNickname, OnionServiceConfig, RendRequest, RunningOnionService};
+use tor_hsservice::{HsNickname, OnionServiceConfig, RendRequest, RunningOnionService};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::{
-    comm::enums::{IPCCmd, IPCRes},
+    comm::enums::IPCRes,
     config::parse_config,
     debug,
     entities::slave::Slave,
     msg::{Msg, PeerStatus},
+    operations::{edhverify, x25519_handshake},
 };
 
 pub struct Manager {
@@ -47,9 +47,13 @@ impl Manager {
         let config = parse_config()?;
         let arti_store = config.arti_key_store;
         let mut tor_config_builder = TorClientConfig::builder();
+        let stream_timeout_config = tor_config_builder.stream_timeouts();
+        // setting timeout to 20 secs bcoz we'd rather not wait 60 secs when its destined to fail
+        stream_timeout_config.connect_timeout(Duration::from_secs(20));
         let storage_builder = tor_config_builder.storage();
-        let cfgpath = CfgPath::new(arti_store.clone());
-        storage_builder.state_dir(cfgpath);
+        let state_path = CfgPath::new(arti_store.clone());
+        let cache_path = CfgPath::new(config.cache_path);
+        storage_builder.cache_dir(cache_path).state_dir(state_path);
         let tor_config = tor_config_builder.build()?;
 
         debug!("Starting Server...");
@@ -84,6 +88,8 @@ impl Manager {
         })
     }
 
+    /// # Errors
+    /// # Panics
     pub fn init_server(&mut self) -> Result<(), Box<dyn Error>> {
         debug!("Initializing Server.");
         let mut stream = self.stream.take().unwrap();
@@ -118,16 +124,10 @@ impl Manager {
                                                 response_sender,
                                                 shared_secret_key: Arc::new(RwLock::new([0u8; 32])),
                                             };
-                                            // loop {
-                                            conn.connect_as_listener().await.unwrap();
-                                            // {
-                                            //     Ok(_) => break,
-                                            //     Err(e) => {
-                                            //         eprintln!("Cannot connect to peer.\n{e}");
-                                            //         println!("Retrying...");
-                                            //     }
-                                            // }
-                                            // }
+                                            if let Err(e) = conn.connect_as_listener().await {
+                                                eprintln!("Cannot connect as listener.\n{e}");
+                                                continue;
+                                            }
                                             if conn.spawn_communication().is_ok() {
                                                 let mut guard = peers.lock().unwrap();
                                                 #[allow(clippy::cast_possible_truncation)]
@@ -168,22 +168,25 @@ impl Manager {
             }
         };
         let (mut reader, mut writer) = tokio::io::split(stream);
-        let mut buf = [0u8; 4096 * 4];
-        let size = reader.read(&mut buf).await?;
+        let size = reader.read_u16().await? as usize;
+        println!("recommended size: {size}");
+        let mut buf = vec![0u8; size];
+        let size = reader.read_exact(&mut buf).await?;
 
-        let (de_msg, _) =
-            bincode::serde::decode_from_slice::<Msg, _>(&buf[..size], cfg::standard())?;
+        let de_msg = Msg::from_bytes(&buf[..size]);
         debug!("received msg: {:?}", de_msg);
 
         let local_private_key = EphemeralSecret::random_from_rng(OsRng);
         let mut remote_public_key = None;
         println!("Performing X25519 Handshake.");
-        self.x25519_handshake(&mut remote_public_key, &peer_addr, de_msg)?;
+        x25519_handshake(&mut remote_public_key, &peer_addr, de_msg)?;
         let local_public_key = PublicKey::from(&local_private_key);
-        let msg = Msg::PublicKey(*local_public_key.as_bytes());
+        let msg = Msg::PublicKey(local_public_key.to_bytes());
         debug!("SENDING msg:\n{:?}", msg);
-        let msg_bytes = bincode::serde::encode_to_vec(msg, cfg::standard())?;
+        let msg_bytes = msg.to_vec();
 
+        #[allow(clippy::cast_possible_truncation)]
+        writer.write_u16(msg_bytes.len() as u16).await?;
         writer.write_all(&msg_bytes).await?;
         writer.flush().await?;
         println!("Handshake Complete. Performing Elliptical Diffie-Hellman key exchange.");
@@ -192,7 +195,7 @@ impl Manager {
             return Err("Remote Public Key not set.".into());
         };
         let mut shared_secret_key = None;
-        self.edhverify(
+        edhverify(
             &mut writer,
             local_private_key,
             remote_public_key,
@@ -220,52 +223,6 @@ impl Manager {
         }
         println!("Exchange Complete..");
         Ok(PeerStatus::Connected)
-    }
-
-    fn x25519_handshake(
-        &self,
-        remote_public_key: &mut Option<PublicKey>,
-        peer_addr: &(String, u16),
-        msg: Msg,
-    ) -> Result<(), Box<dyn Error>> {
-        let Msg::SignedAndPublicKey(signature, claimed_remote_public_key) = msg else {
-            return Err("No Signed Public key found.".into());
-        };
-        let hsid = HsId::from_str(&peer_addr.0)?;
-        let hsid_bytes = hsid.as_ref();
-        let verifying_key = VerifyingKey::from_bytes(hsid_bytes)?;
-        let signature: [u8; 64] = match signature.try_into() {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(format!("Cannot convert signature to Array, len {}", e.len()).into());
-            }
-        };
-        let signature = Signature::from_bytes(&signature);
-        verifying_key.verify(&claimed_remote_public_key, &signature)?;
-        *remote_public_key = Some(PublicKey::from(claimed_remote_public_key));
-        Ok(())
-    }
-
-    async fn edhverify(
-        &mut self,
-        writer: &mut WriteHalf<DataStream>,
-        local_private_key: EphemeralSecret,
-        remote_public_key: PublicKey,
-        ssk: &mut Option<[u8; 32]>,
-    ) -> Result<(), Box<dyn Error>> {
-        let local_public_key = PublicKey::from(&local_private_key);
-        let shared_secret_key = local_private_key.diffie_hellman(&remote_public_key);
-        let mut buf = [0u8; 4096];
-        let msg_size = bincode::serde::encode_into_slice(
-            Msg::PublicKey(*local_public_key.as_bytes()),
-            &mut buf,
-            cfg::standard(),
-        )?;
-        writer.write_all(&buf[..msg_size]).await?;
-        writer.flush().await?;
-        *ssk = Some(*shared_secret_key.as_bytes());
-
-        Ok(())
     }
 
     /// Used to setup Slave to Master communication Pipeline

@@ -12,6 +12,9 @@ pub const ARTI_KEYSTORE: &str = "/.conan/tor_state";
 /// Private key from Arti Client to sign during key exchange
 pub const ARTI_PRIVATE_KEY: &str = "/keystore/hss/conan-daemon/ks_hs_id.ed25519_expanded_private";
 
+/// Cache path for arti client
+pub const CACHE_PATH: &str = "/var/cache/conan/";
+
 /// Socket Location of daemon socket for inter process communication
 pub const DAEMON_SOCKET: &str = "/var/conan/conan.socket";
 
