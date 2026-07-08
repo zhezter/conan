@@ -1,9 +1,12 @@
-use std::{env, fs};
+use std::{env, fs, process};
 
 use clap::Parser;
 use config::{Config, FileFormat};
 
-use crate::constants::{ARTI_KEYSTORE, CACHE_PATH, CONFIG_PATH, DAEMON_SOCKET, DATABASE_PATH};
+use crate::{
+    constants::{ARTI_KEYSTORE, CACHE_PATH, CONFIG_PATH, DAEMON_SOCKET, DATABASE_PATH},
+    database::setup::setup_db,
+};
 
 #[derive(Debug, Parser)]
 #[command(about, version, long_about = None)]
@@ -102,6 +105,11 @@ pub fn parse_config() -> Result<ConanConfig, Box<dyn std::error::Error>> {
         db_path
     };
     _ = fs::create_dir(&cache_path);
+    if setup_db(&db_path).is_err() {
+        eprintln!("Could not setup Database.\nAborting");
+        process::exit(1);
+    }
+
     let res = ConanConfig {
         socket_path,
         arti_key_store,

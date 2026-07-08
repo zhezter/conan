@@ -1,7 +1,7 @@
 use conanprotocol::{
     comm::enums::{IPCCmd, IPCRes},
-    entities::{manager::Manager, master::Master},
     msg::Msg,
+    server_entities::{manager::Manager, master::Master},
 };
 use std::error::Error;
 

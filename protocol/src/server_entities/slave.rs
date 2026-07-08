@@ -74,7 +74,6 @@ impl Slave {
         let signature = signing_key.sign(local_public_key.as_bytes());
         let msg =
             Msg::SignedAndPublicKey(signature.to_bytes().to_vec(), *local_public_key.as_bytes());
-        println!("SENDING msg: {msg:?}");
         let payload = msg.to_vec();
         println!("Sending Signature & Public Key to peer.");
         #[allow(clippy::cast_possible_truncation)]
@@ -90,7 +89,6 @@ impl Slave {
         let size = reader.read_exact(&mut buf).await?;
         println!("Parsing peer's public key.");
         let recv_msg = Msg::from_bytes(&buf[..size]);
-        println!("received msg: {recv_msg:?}");
 
         let Msg::PublicKey(remote_public_key) = recv_msg else {
             return Err("Did not receive remote public key. aborting.".into());

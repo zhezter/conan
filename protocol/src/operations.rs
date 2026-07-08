@@ -9,6 +9,7 @@ use chacha20poly1305::{
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use hkdf::Hkdf;
+use safelog::DisplayRedacted;
 use sha2::Sha256;
 use ssh_encoding::Decode;
 use std::{error::Error, fs::File, io::Read, str::FromStr};
@@ -117,6 +118,7 @@ pub fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<dyn Er
         return Err("Algorithm name mismatch".into());
     }
 
+    let _pub_key = Vec::<u8>::decode(&mut inner_bytes)?;
     let priv_key = Vec::<u8>::decode(&mut inner_bytes)?;
     let priv_key = priv_key.try_into().unwrap();
     let expanded_key = ExpandedKeypair::from_secret_key_bytes(priv_key).unwrap();

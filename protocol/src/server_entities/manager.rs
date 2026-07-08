@@ -20,9 +20,9 @@ use crate::{
     comm::enums::IPCRes,
     config::parse_config,
     debug,
-    entities::slave::Slave,
     msg::{Msg, PeerStatus},
     operations::{edhverify, x25519_handshake},
+    server_entities::slave::Slave,
 };
 
 pub struct Manager {
@@ -159,7 +159,7 @@ impl Manager {
         &mut self,
         peer_addr: (String, u16),
     ) -> Result<PeerStatus, Box<dyn Error>> {
-        debug!("Connecting to peer...");
+        println!("Connecting to peer...");
         let stream = loop {
             match self.tor_client.connect(&peer_addr).await {
                 Ok(s) => break s,
@@ -172,7 +172,6 @@ impl Manager {
         let size = reader.read_exact(&mut buf).await?;
 
         let de_msg = Msg::from_bytes(&buf[..size]);
-        println!("received msg: {de_msg:?}");
 
         let local_private_key = EphemeralSecret::random_from_rng(OsRng);
         let mut remote_public_key = None;
@@ -180,7 +179,6 @@ impl Manager {
         x25519_handshake(&mut remote_public_key, &peer_addr, de_msg)?;
         let local_public_key = PublicKey::from(&local_private_key);
         let msg = Msg::PublicKey(local_public_key.to_bytes());
-        println!("SENDING msg:\n{msg:?}");
         let msg_bytes = msg.to_vec();
 
         #[allow(clippy::cast_possible_truncation)]
