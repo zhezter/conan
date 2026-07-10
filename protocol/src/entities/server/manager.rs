@@ -16,12 +16,12 @@ use crate::{
     comm::enums::IPCRes,
     config::parse_config,
     database::DBConnection,
-    database_entities::peer::{Peer, PeerData},
     debug,
+    entities::database::peer::{Peer, PeerData},
+    entities::server::slave::Slave,
     extras::generate_name,
     msg::{Msg, PeerStatus},
     operations::dialer_actor,
-    server_entities::slave::Slave,
 };
 
 pub struct Manager {

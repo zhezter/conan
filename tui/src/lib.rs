@@ -10,7 +10,7 @@ use std::{
 use bincode::config;
 use conanprotocol::{
     comm::enums::{IPCCmd, IPCRes, encode},
-    database_entities::peer::Peer,
+    entities::database::peer::Peer,
 };
 use ratatui::{
     Frame, Terminal,

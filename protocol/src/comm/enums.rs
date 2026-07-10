@@ -3,7 +3,7 @@ use std::error::Error;
 use bincode::{Decode, Encode, config};
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::database_entities::{chat::Chat, peer::Peer};
+use crate::entities::database::{chat::Chat, peer::Peer};
 
 #[derive(Debug, Clone, PartialEq, Eq, Decode, Encode)]
 #[non_exhaustive]

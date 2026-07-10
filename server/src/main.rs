@@ -1,8 +1,8 @@
 use conanprotocol::{
     comm::enums::{IPCCmd, IPCRes},
-    database_entities::{chat::ChatData, peer::PeerData},
+    entities::database::{chat::ChatData, peer::PeerData},
+    entities::server::{manager::Manager, master::Master},
     msg::Msg,
-    server_entities::{manager::Manager, master::Master},
 };
 use std::error::Error;
 
