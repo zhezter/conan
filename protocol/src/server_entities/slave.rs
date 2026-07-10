@@ -1,5 +1,4 @@
 use arti_client::DataStream;
-use ed25519_dalek::ed25519::signature::rand_core::OsRng;
 use std::{
     error::Error,
     sync::{Arc, RwLock},
@@ -8,17 +7,13 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     sync::broadcast,
 };
-use x25519_dalek::{EphemeralSecret, PublicKey};
+use tor_hsservice::RunningOnionService;
 
 use crate::{
     comm::enums::IPCRes,
-    config::parse_config,
-    database::DBConnection,
-    database_entities::peer::{Peer, PeerData},
     msg::Msg,
-    operations::{decrypt, encrypt, signing_key},
+    operations::{decrypt, encrypt, listener_actor},
 };
-#[derive(Debug)]
 pub struct Slave {
     pub reader: Option<ReadHalf<DataStream>>,
     pub writer: WriteHalf<DataStream>,
@@ -26,6 +21,7 @@ pub struct Slave {
     /// Shared secret key after diffie helmann exchange
     pub shared_secret_key: Arc<RwLock<[u8; 32]>>,
     pub msg_sender: broadcast::Sender<IPCRes>,
+    pub service: Arc<RunningOnionService>,
 }
 
 impl Slave {
@@ -43,7 +39,7 @@ impl Slave {
         let response_sender = self.response_sender.clone();
         tokio::spawn(async move {
             let mut buf = [0u8; 4096];
-            loop {
+            for _ in 0..5 {
                 match reader.read(&mut buf).await {
                     Ok(0) => {}
                     Ok(n) => {
@@ -60,6 +56,7 @@ impl Slave {
                         eprintln!("Error writing to socket.\n{e}");
                     }
                 }
+                eprintln!("Retrying...");
             }
         });
         Ok(())
@@ -72,49 +69,17 @@ impl Slave {
         let Some(reader) = self.reader.as_mut() else {
             return Err("No reader found.".into());
         };
-        let size = reader.read_u16().await? as usize;
-        let mut buf = vec![0u8; size];
-        let size = reader.read_exact(&mut buf).await?;
-        let recv_msg = Msg::from_bytes(&buf[..size]);
-
-        let Msg::PublicKey(remote_public_key) = recv_msg else {
-            return Err("Did not receive remote public key. aborting.".into());
+        let local_hsid = self
+            .service
+            .onion_address()
+            .ok_or("Could not get Onion Address")
+            .unwrap();
+        let mut shared_secret_key = None;
+        listener_actor(reader, &mut self.writer, &mut shared_secret_key, local_hsid).await?;
+        let Some(shared_secret_key) = shared_secret_key else {
+            return Err("Could not parse Shared Secret Key.".into());
         };
-        let config = parse_config()?;
-        let local_private_key = EphemeralSecret::random_from_rng(OsRng);
-        let local_public_key = PublicKey::from(&local_private_key);
-        let signing_key = signing_key(config.arti_key_store)?;
-        let mut data = vec![];
-        data.extend_from_slice(&remote_public_key);
-        data.extend_from_slice(local_public_key.as_bytes());
-        let data: [u8; 64] = data.try_into().unwrap();
-        let signature = signing_key.sign(&data);
-        let msg = Msg::SignedAndPublicKey(
-            signature.to_bytes().to_vec(),
-            remote_public_key,
-            local_public_key.to_bytes(),
-        );
-        let payload = msg.to_vec();
-        println!("Sending Signature & Public Key to peer.");
-        #[allow(clippy::cast_possible_truncation)]
-        self.writer.write_u16(payload.len() as u16).await?;
-        self.writer.write_all(&payload).await?;
-        self.writer.flush().await?;
-        println!("Reading peer's public key.");
-        let size = reader.read_u16().await? as usize;
-        let mut buf = vec![0u8; size];
-        let size = reader.read_exact(&mut buf).await?;
-        println!("Parsing peer's public key.");
-        let recv_msg = Msg::from_bytes(&buf[..size]);
-
-        let Msg::PublicKey(remote_public_key) = recv_msg else {
-            return Err("Did not receive remote public key. aborting.".into());
-        };
-        let rpk = PublicKey::from(remote_public_key);
-        let shared_secret_key = local_private_key.diffie_hellman(&rpk);
-        *self.shared_secret_key.write().unwrap() = *shared_secret_key.as_bytes();
-        // reader.read_to_end(&mut vec![]).await?;
-        println!("Verification Complete.");
+        *self.shared_secret_key.write().unwrap() = shared_secret_key;
         Ok(())
     }
 

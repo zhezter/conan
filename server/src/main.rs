@@ -1,6 +1,5 @@
 use conanprotocol::{
     comm::enums::{IPCCmd, IPCRes},
-    database::DBConnection,
     database_entities::{chat::ChatData, peer::PeerData},
     msg::Msg,
     server_entities::{manager::Manager, master::Master},

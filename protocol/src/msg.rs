@@ -13,10 +13,10 @@ pub enum PeerStatus {
     NotFound,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Internal {
-    Msg(Msg),
+    HsId,
 }
 
 #[non_exhaustive]
@@ -25,6 +25,7 @@ pub enum Msg {
     Text(String),
     PublicKey([u8; 32]),
     SignedAndPublicKey(Vec<u8>, [u8; 32], [u8; 32]),
+    Verified,
     Begin,
     End,
 }

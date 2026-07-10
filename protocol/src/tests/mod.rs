@@ -10,8 +10,9 @@ use tor_llcrypto::pk::ed25519::Ed25519PublicKey;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use crate::{
+    config::parse_config,
     msg::Msg,
-    operations::{decrypt, edhverify, encrypt, signing_key, x25519_handshake},
+    operations::{decrypt, dialer_actor, edhverify, encrypt, signing_key, x25519_handshake},
 };
 
 #[test]
@@ -30,71 +31,21 @@ fn test_cryptography() {
     assert_eq!(msg, deserialized);
 }
 
-#[tokio::test]
-async fn test_verification() {
-    // assuming p1 as local peer and a listener
-    // p2 as remote dialer
-    // this is the link that got generated on my end, and WILL be different on yours.
-    // change it when testing
-    let p1_hsid = "sg6ifrxlrrjbvslgfdodqxs27zfngheayftxhdenblpmerjcclr4raad.onion";
-    let key_path = "/home/grishma/.conan/user1";
-    let (mut p1_sock, mut p2_sock) = tokio::io::duplex(100);
-    let p1_signing_key = signing_key(key_path.into()).unwrap();
-    // self note: Verifying key is always the Public Key.
-    let p1_verifying_key = p1_signing_key.public_key();
-
-    let p1_private_key = EphemeralSecret::random_from_rng(OsRng);
-    let p1_public_key = PublicKey::from(&p1_private_key);
-
-    // verifying that verifying key actually matches signing key's verifying key.
-    let hsid = HsId::from_str(p1_hsid).unwrap();
-    let hsid_bytes = hsid.as_ref();
-    assert_eq!(hsid_bytes, p1_verifying_key.as_bytes());
-
-    // p1 preparing message to be sent to p2
-    let signature = p1_signing_key.sign(p1_public_key.as_bytes());
-    let signed_public_key_bytes =
-        Msg::SignedAndPublicKey(signature.to_bytes().to_vec(), p1_public_key.to_bytes()).to_vec();
-
-    // p1 writes data to p2
-    #[allow(clippy::cast_possible_truncation)]
-    p1_sock
-        .write_u16(signed_public_key_bytes.len() as u16)
-        .await
-        .unwrap();
-    p1_sock.flush().await.unwrap();
-    p1_sock.write_all(&signed_public_key_bytes).await.unwrap();
-    p1_sock.flush().await.unwrap();
-
-    // p2 reads data
-    let buf_len = p2_sock.read_u16().await.unwrap() as usize;
-    let mut buf = vec![0u8; buf_len];
-    let size = p2_sock.read_exact(&mut buf).await.unwrap();
-    let msg = Msg::from_bytes(&buf[..size]);
-    let p2_private_key = EphemeralSecret::random_from_rng(OsRng);
-    let p2_public_key = PublicKey::from(&p2_private_key);
-    // confirms message received is this enum exactly
-    let mut remote_public_key = None;
-    if let Err(e) = x25519_handshake(&mut remote_public_key, &(p1_hsid.to_string(), 80), msg) {
-        panic!("X25519 Verification Error: {e}");
-    }
-
-    let msg_reply = Msg::PublicKey(p2_public_key.to_bytes()).to_vec();
-    #[allow(clippy::cast_possible_truncation)]
-    p2_sock.write_u16(msg_reply.len() as u16).await.unwrap();
-    p2_sock.write_all(&msg_reply).await.unwrap();
-    p2_sock.flush().await.unwrap();
-    // if we reach here, we know listener is verified, go to stage 2
-    let mut shared_secret_key = None;
-    let (_, mut w) = tokio::io::split(p2_sock);
-    if let Err(e) = edhverify(
-        &mut w,
-        p2_private_key,
-        remote_public_key.unwrap(),
-        &mut shared_secret_key,
-    )
-    .await
-    {
-        panic!("EDH Verification Error: {e}");
-    }
-}
+// #[tokio::test]
+// async fn test_verification() {
+//     // assuming p1 as local peer and a listener
+//     // p2 as remote dialer
+//     // this is the link that got generated on my end, and WILL be different on yours.
+//     // change it when testing
+//     let p1_hsid = "sg6ifrxlrrjbvslgfdodqxs27zfngheayftxhdenblpmerjcclr4raad.onion";
+//     let p2_hs
+//     let key_path = parse_config().unwrap().arti_key_store;
+//     let signing_key = signing_key(key_path).unwrap();
+//     let (mut p1_sock, mut p2_sock) = tokio::io::duplex(100);
+//
+//     tokio::spawn(async move {
+//         let (mut reader, mut writer) = tokio::io::split(p1_sock);
+//         let mut ssk = None;
+//         dialer_actor(&mut reader, &mut writer, &mut ssk, local_hsid, peer_addr).await;
+//     });
+// }

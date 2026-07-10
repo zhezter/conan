@@ -1,18 +1,22 @@
 use crate::{
+    config::parse_config,
     constants::{ARTI_PRIVATE_KEY, ENCRYPTION_INFO},
     msg::Msg,
 };
+use arti_client::DataStream;
 use base64::Engine;
 use chacha20poly1305::{
     ChaCha20Poly1305, KeyInit, Nonce,
     aead::{Aead, Generate},
 };
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey, ed25519::signature::rand_core::OsRng};
+use futures::AsyncReadExt as FutureRead;
 use hkdf::Hkdf;
+use safelog::DisplayRedacted;
 use sha2::Sha256;
 use ssh_encoding::Decode;
 use std::{error::Error, fs::File, io::Read, str::FromStr};
-use tokio::io::{AsyncWriteExt, WriteHalf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tor_hsservice::HsId;
 use tor_llcrypto::pk::ed25519::ExpandedKeypair;
 use x25519_dalek::{EphemeralSecret, PublicKey};
@@ -60,27 +64,11 @@ pub fn decrypt(
     Ok(decrypted_bytes)
 }
 
-// Commented for now. maybe removed or used later
-
-// pub fn generate_keypair() -> Result<(), Box<dyn Error>> {
-//     let signing_path = Path::new(&home_dir).join(Path::new(ARTI_KEYSTORE));
-//     if !signing_path.exists() {
-//         let signing_key = SigningKey::generate(&mut OsRng);
-//         let mut signing_file = OpenOptions::new()
-//             .create(true)
-//             .truncate(true)
-//             .write(true)
-//             .open(signing_path)?;
-//         signing_file.write_all(signing_key.as_bytes())?;
-//     }
-//     Ok(())
-// }
-
 /// Used to retrieve signing key for self tor server
 ///
 /// # Errors
 /// # Panics
-pub fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<dyn Error>> {
+pub async fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<dyn Error>> {
     let mut key_store_path = arti_key_store;
     key_store_path.push_str(ARTI_PRIVATE_KEY);
     let mut signing_file = File::open(key_store_path)?;
@@ -94,7 +82,7 @@ pub fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<dyn Er
     let mut payload_slice = payload.as_slice();
 
     let mut magic = [0u8; 15];
-    payload_slice.read_exact(&mut magic)?;
+    FutureRead::read_exact(&mut payload_slice, &mut magic).await?;
     if &magic != b"openssh-key-v1\0" {
         return Err("Invalid SSH magic".into());
     }
@@ -162,4 +150,185 @@ pub fn edhverify(
 ) {
     let shared_secret_key = local_private_key.diffie_hellman(&remote_public_key);
     *ssk = Some(*shared_secret_key.as_bytes());
+}
+
+pub async fn listener_actor(
+    reader: &mut ReadHalf<DataStream>,
+    writer: &mut WriteHalf<DataStream>,
+    ssk: &mut Option<[u8; 32]>,
+    local_hsid: HsId,
+) -> Result<(), Box<dyn Error>> {
+    // reading dialer's x25519 public key.
+    let size = reader.read_u16().await? as usize;
+    let mut buf = vec![0u8; size];
+    let size = reader.read_exact(&mut buf).await?;
+    let recv_msg = Msg::from_bytes(&buf[..size]);
+
+    let Msg::PublicKey(remote_public_key) = recv_msg else {
+        return Err("Did not receive remote public key. aborting.".into());
+    };
+    let config = parse_config()?;
+    let local_private_key = EphemeralSecret::random_from_rng(OsRng);
+    let local_public_key = PublicKey::from(&local_private_key).to_bytes();
+    let signing_key = signing_key(config.arti_key_store).await?;
+
+    // creating signature using local ed25519 private key and stacking local and remote
+    // ephemeral keys
+    let mut data = vec![];
+    data.extend_from_slice(&remote_public_key);
+    data.extend_from_slice(&local_public_key);
+    let data: [u8; 64] = data.try_into().unwrap();
+    let signature = signing_key.sign(&data);
+
+    // remote entities should always be put before local entities
+    // because kindness & respect is one of many factors that makes us human.
+    let msg = Msg::SignedAndPublicKey(
+        signature.to_bytes().to_vec(),
+        remote_public_key,
+        local_public_key,
+    );
+
+    let payload = msg.to_vec();
+    // writing message to dialer
+    println!("Sending Signature & Public Key to peer.");
+    #[allow(clippy::cast_possible_truncation)]
+    writer.write_u16(payload.len() as u16).await?;
+    writer.write_all(&payload).await?;
+    writer.flush().await?;
+
+    let rpk = PublicKey::from(remote_public_key);
+    let shared_secret_key = local_private_key.diffie_hellman(&rpk);
+    *ssk = Some(*shared_secret_key.as_bytes());
+
+    println!("Parsing peer's public key.");
+    let size = reader.read_u16().await? as usize;
+    let mut buf = vec![0u8; size];
+    let size = reader.read_exact(&mut buf).await?;
+
+    // decrypting and reading here.
+    let decrypted = decrypt(shared_secret_key.as_bytes(), &buf[..size])?;
+    let recv_msg = Msg::from_bytes(&decrypted);
+    let Msg::SignedAndPublicKey(signature, claimed_local_hsid_bytes, claimed_remote_hsid_bytes) =
+        recv_msg
+    else {
+        return Err("No Signed Key found from Peer.".into());
+    };
+    let local_hsid_bytes = local_hsid.as_ref();
+    let remote_hsid = HsId::from(claimed_remote_hsid_bytes);
+    println!("Peer's Address: {}", remote_hsid.display_unredacted());
+    if local_hsid_bytes != &claimed_local_hsid_bytes {
+        return Err("HsId key mismatch. Dropping connection.".into());
+    }
+
+    // prepare data that we assume was same when prepared by dialer
+    // and verify it with dialer's claimed ed25519 public key
+    let mut data = vec![];
+    data.extend_from_slice(&local_public_key);
+    data.extend_from_slice(&remote_public_key);
+    let data = data.as_slice();
+    let signature = Signature::from_bytes(&signature.try_into().unwrap());
+    let verifying_key = VerifyingKey::from_bytes(&claimed_remote_hsid_bytes)?;
+    println!("Verifying Peer's Claim.");
+    verifying_key.verify(data, &signature)?;
+
+    // if verified, we proceed to send a final `Verified` message to dialer
+    // and tell it to wrap things up from its side
+    println!("Verified. Sending Approval.");
+    let verified = encrypt(
+        shared_secret_key.as_bytes(),
+        Msg::Verified.to_vec().as_slice(),
+    )?;
+    #[allow(clippy::cast_possible_truncation)]
+    writer.write_u16(verified.len() as u16).await?;
+    writer.write_all(&verified).await?;
+    writer.flush().await?;
+
+    // reader.read_to_end(&mut vec![]).await?;
+    println!("Verification Complete.");
+    Ok(())
+}
+
+/// Use this toAct as a Dialer
+/// # Errors
+/// # Panics
+pub async fn dialer_actor<R, W>(
+    reader: &mut ReadHalf<R>,
+    writer: &mut WriteHalf<W>,
+    ssk: &mut Option<[u8; 32]>,
+    local_hsid: HsId,
+    peer_addr: &(String, u16),
+) -> Result<(), Box<dyn Error>>
+where
+    R: AsyncReadExt,
+    W: AsyncWriteExt,
+{
+    let local_private_key = EphemeralSecret::random_from_rng(OsRng);
+    let local_public_key = PublicKey::from(&local_private_key);
+    // writing x25519 public key to stream
+    let msg = Msg::PublicKey(local_public_key.to_bytes());
+    let msg_bytes = msg.to_vec();
+    #[allow(clippy::cast_possible_truncation)]
+    writer.write_u16(msg_bytes.len() as u16).await?;
+    writer.write_all(&msg_bytes).await?;
+    writer.flush().await?;
+
+    // Reading listener's signature of local and remote x25519 public key
+    // and assigning in to `remote_public_key`
+    let size = reader.read_u16().await? as usize;
+    let mut buf = vec![0u8; size];
+    let size = reader.read_exact(&mut buf).await?;
+    let de_msg = Msg::from_bytes(&buf[..size]);
+
+    let mut remote_public_key = None;
+    println!("Performing X25519 Handshake.");
+    x25519_handshake(&mut remote_public_key, local_public_key, peer_addr, de_msg)?;
+    let Some(remote_public_key) = remote_public_key else {
+        return Err("Remote Public Key not set.".into());
+    };
+    // after the we confirm we have indeed connected to the right listener,
+    // we combine the x25519 remote public key with our private key to form
+    // a diffie hellman shared secret key.
+    println!("Confirmed. Assigning Shared Secret Key using Diffie Hellman key exchange.");
+    edhverify(local_private_key, remote_public_key, ssk);
+    let Some(shared_secret_key) = *ssk else {
+        return Err("Couldn't get Shared Secret Key.".into());
+    };
+    let config = parse_config()?.arti_key_store;
+    let signing_key = signing_key(config).await?;
+
+    // preparing message containing signed combined key of remote and local x25519 public key
+    // and remote and local ed25519 public key on an encrypted channel using shared secret
+    // key we calculated earlier.
+    let mut data = vec![];
+    data.extend_from_slice(remote_public_key.as_bytes());
+    data.extend_from_slice(local_public_key.as_bytes());
+    let data: [u8; 64] = data.try_into().unwrap();
+    println!("Signing, Encrypting, Sending Message for approval.");
+    let signature = signing_key.sign(&data);
+    let local_hsid_bytes = local_hsid.as_ref();
+    let remote_hsid = HsId::from_str(&peer_addr.0)?;
+    let remote_hsid_bytes = remote_hsid.as_ref();
+    let msg = Msg::SignedAndPublicKey(
+        signature.to_bytes().to_vec(),
+        *remote_hsid_bytes,
+        *local_hsid_bytes,
+    );
+
+    // encrypting and sending here.
+    let encrypted = encrypt(&shared_secret_key, &msg.to_vec())?;
+    #[allow(clippy::cast_possible_truncation)]
+    writer.write_u16(encrypted.len() as u16).await?;
+    writer.write_all(&encrypted).await?;
+    writer.flush().await?;
+
+    // waiting for listener's approval
+    println!("Waiting for approval..");
+    let size = reader.read_u16().await?;
+    let mut buf = vec![0u8; size as usize];
+    reader.read_exact(&mut buf).await?;
+    let decrypted = decrypt(&shared_secret_key, &buf)?;
+    let Msg::Verified = Msg::from_bytes(&decrypted) else {
+        return Err("Didn't receive Approval, Aborting.".into());
+    };
+    Ok(())
 }
