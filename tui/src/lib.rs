@@ -150,8 +150,15 @@ impl App {
                     };
                     let idx = u32::from(idx);
                     if cur_cont.id.eq(&idx) {
-                        let new_chat = Chat::build(&text, idx, 1);
+                        let new_chat = Chat::chat_to_rec(&text, idx);
                         self.chats.push(new_chat);
+                    }
+                }
+                IPCRes::ChatList { peer_id, chats } => {
+                    if let Ok(Some(target)) = self.current_contact()
+                        && target.id == u32::from(peer_id)
+                    {
+                        self.chats = chats;
                     }
                 }
                 _ => {}
@@ -257,5 +264,25 @@ impl App {
             return Ok(None);
         };
         Ok(Some(cur_cont))
+    }
+
+    pub async fn update_chats(
+        &mut self,
+        last_opened_chat: &mut Option<usize>,
+    ) -> Result<(), Box<dyn Error>> {
+        let cur_idx = self.contact_idx.selected();
+        if *last_opened_chat != cur_idx {
+            if let Some(cur_idx) = cur_idx {
+                let peer = &self.contacts[cur_idx];
+                self.send(IPCCmd::ChatList {
+                    peer_id: peer.id as u8,
+                    msg_amount: 50,
+                })
+                .await?;
+            } else {
+                self.chats.clear();
+            }
+        }
+        Ok(())
     }
 }

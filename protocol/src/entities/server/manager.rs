@@ -333,19 +333,30 @@ impl Manager {
         let sen = self.msg_sender.clone();
         let peers = Arc::clone(&self.peers);
         let dbconn = Connection::open(&self.config.db_path)?;
+        let msg_sen = self.msg_sender.clone();
         tokio::spawn(async move {
-            while let Ok(internal) = rec.recv().await {
+            while let Ok((idx, internal)) = rec.recv().await {
                 let mut res = None;
-                println!("Got task: {internal:#?}");
-                match internal.1 {
+                let idx_u32 = u32::from(idx);
+                match internal {
                     Internal::Msg(msg) => match msg {
                         Msg::Text(text) => {
-                            let chat = Chat::build(&text, internal.0 as u32, 1);
-                            dbconn.insert_chat(chat).unwrap();
-                            res = Some(IPCRes::Text(internal.0, text.clone()));
-                            if let Ok(Some(target)) = dbconn.get_peer_from_id(internal.0 as u32) {
-                                _ = ConanNotif::Text(target.name, text).notify();
+                            let chat = Chat::chat_to_rec(&text, idx_u32);
+                            for _ in 0..3 {
+                                if let Err(e) = dbconn.insert_chat(chat.clone()) {
+                                    println!("Error inserting chat: {e}");
+                                } else {
+                                    println!("Inserting Chat..");
+                                    break;
+                                }
                             }
+                            res = Some(IPCRes::Text(idx, text.clone()));
+                            let Ok(Some(target)) = dbconn.get_peer_from_id(idx_u32) else {
+                                _ = msg_sen
+                                    .send(IPCRes::Error("Cannot find peer in database.".into()));
+                                continue;
+                            };
+                            _ = ConanNotif::Text(target.name, text).notify().await;
                         }
                         Msg::Verified => {
                             res = Some(IPCRes::Notification("Verified.".into()));
@@ -354,10 +365,10 @@ impl Manager {
                         _ => continue,
                     },
                     Internal::RemovePeer(idx) => {
-                        if let Ok(mut guard) = peers.lock() {
-                            if let Some(conn) = guard.remove(&idx) {
-                                println!("Removing Connection: {}", conn.id);
-                            }
+                        if let Ok(mut guard) = peers.lock()
+                            && let Some(conn) = guard.remove(&idx)
+                        {
+                            println!("Removing Connection: {}", conn.id);
                         }
                     }
                     _ => continue,

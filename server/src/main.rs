@@ -2,7 +2,10 @@ use conanprotocol::{
     comm::enums::{IPCCmd, IPCRes},
     config::parse_config,
     entities::{
-        database::{chat::ChatData, peer::PeerData},
+        database::{
+            chat::{Chat, ChatData},
+            peer::PeerData,
+        },
         server::{manager::Manager, master::Master},
     },
     msg::Msg,
@@ -46,6 +49,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         println!("Cannot find target peer.");
                         continue;
                     };
+                    let chat = Chat::chat_to_send(&text, u32::from(idx));
+                    manager.dbconn.insert_chat(chat)?;
                     let encoded = Msg::Text(text).to_vec();
                     send(
                         &mut target.writer,
