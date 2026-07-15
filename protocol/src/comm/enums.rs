@@ -13,7 +13,9 @@ pub enum IPCCmd {
     Text(u8, String),
     PeerList,
     ChatList { peer_id: u8, msg_amount: u8 },
+    PingChat,
     Tick,
+    RenamePeer(u8, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Decode, Encode, Serialize, Deserialize)]

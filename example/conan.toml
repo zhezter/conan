@@ -1,0 +1,4 @@
+socket-path = "/home/grishma/.conan/conan.socket"
+key-path = "/home/grishma/.conan/default"
+cache-path = "/home/grishma/.conan/cache"
+database-path = "/home/grishma/.conan/database"

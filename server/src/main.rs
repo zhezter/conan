@@ -42,7 +42,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 IPCCmd::Text(idx, text) => {
-                    println!("msg to send: {idx}, {text}");
                     let peers = Arc::clone(&manager.peers);
                     let mut peers = peers.lock().unwrap();
                     let Some(target) = peers.get_mut(&idx) else {

@@ -9,12 +9,12 @@ use ratatui::{
 
 use crate::App;
 
-pub trait NewPeer {
-    fn render_new_peer_block(&self, f: &mut Frame<'_>, input: &str, cursor_pos: &usize);
+pub trait InputScreen {
+    fn render_input_block(&self, f: &mut Frame<'_>, input: &str, prompt: &str, cursor_pos: &usize);
 }
 
-impl NewPeer for App {
-    fn render_new_peer_block(&self, f: &mut Frame<'_>, input: &str, cursor_pos: &usize) {
+impl InputScreen for App {
+    fn render_input_block(&self, f: &mut Frame<'_>, input: &str, prompt: &str, cursor_pos: &usize) {
         let area = f.area();
         let text = Line::from(input)
             .alignment(HorizontalAlignment::Left)
@@ -23,7 +23,7 @@ impl NewPeer for App {
         let block = Block::new()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .title_top(" Peer Address ")
+            .title_top(prompt)
             .title_bottom(Line::from(" OK<enter> ").right_aligned())
             .title_bottom(Line::from(" Cancel<esc> ").left_aligned());
 

@@ -13,14 +13,17 @@ CLIENT_NAME="conan"
 SYSTEMD_PATH="/etc/systemd/system"
 RUNIT_PATH="/etc/sv/"
 
+DAEMON_PATH="/usr/bin/$DAEMON_NAME"
+CLIENT_PATH="/usr/bin/$CLIENT_NAME"
+
 echo "Make sure you ran \"cargo build --release\""
 echo "Starting installation in 1 secs"
 sleep 1
 
 echo "Installing Binary..."
-cp -f ./target/release/$DAEMON_NAME /usr/bin/$DAEMON_NAME
-cp -f ./target/release/$CLIENT_NAME /usr/bin/$CLIENT_NAME
-chmod 755 /usr/bin/$DAEMON_NAME
+cp -f ./target/release/$DAEMON_NAME "$DAEMON_PATH"
+cp -f ./target/release/$CLIENT_NAME "$CLIENT_PATH"
+chmod 755 "$DAEMON_PATH"
 
 echo "Detecting Service Manager"
 
@@ -33,7 +36,7 @@ Description=Beacond Network Manager
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/$DAEMON_NAME
+ExecStart=$DAEMON_PATH
 Type=simple
 Restart=on-failure
 RestartSec=5
@@ -51,7 +54,7 @@ elif [ -d "$RUNIT_PATH" ] && command -v sv >/dev/null 2>&1; then
 
   cat <<EOF >"$RUNIT_PATH/$DAEMON_NAME/run"
 #!/bin/bash
-exec /usr/bin/$DAEMON_NAME 2>&1
+exec $DAEMON_PATH 2>&1
 EOF
 
   cat <<EOF >"$RUNIT_PATH/$DAEMON_NAME/log/run"

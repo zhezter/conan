@@ -136,6 +136,9 @@ impl Manager {
                     let response_sender = response_sender.clone();
                     let peers = Arc::clone(&peers);
                     let service = Arc::clone(&service);
+                    _ = msg_sender.send(IPCRes::Notification(
+                        "Someone is trying to connect.".to_string(),
+                    ));
                     println!("Client Detected.");
                     tokio::spawn(async move {
                         match rendreq.accept().await {
@@ -149,6 +152,8 @@ impl Manager {
                                         Ok(stream) => {
                                             let (reader, writer) = tokio::io::split(stream);
                                             let mut conn = Slave {
+                                                // ID gets changed during the connection procedure
+                                                // so it doesnt matter for now
                                                 id: 0,
                                                 reader: Some(reader),
                                                 writer,
@@ -167,12 +172,10 @@ impl Manager {
                                                 }
                                             };
                                             if conn.spawn_communication().is_ok() {
-                                                println!("Setup Slave Communication.");
-                                                let mut guard = peers.lock().unwrap();
                                                 println!(
-                                                    "peer idx: {}, conn: {:?}",
-                                                    peer_idx, conn.id
+                                                    "Slave Communication Pipeline Established."
                                                 );
+                                                let mut guard = peers.lock().unwrap();
                                                 guard.insert(peer_idx, conn);
                                             }
                                         }

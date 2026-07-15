@@ -1,5 +1,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
+use crate::functions::{ConfirmMode, InputMode};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tab {
     Contact,
@@ -17,17 +19,19 @@ pub enum TuiCommand {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Screen {
-    PeerInputScreen {
+    InputScreen {
         input: String,
         cursor_pos: usize,
+        prompt: String,
+        mode: InputMode,
     },
     LoadingScreen {
         loading_text: String,
     },
     ConfirmScreen {
         prompt: String,
-        options: Vec<String>,
-        idx: usize,
+        yes_selected: bool,
+        mode: ConfirmMode,
     },
     None,
 }

@@ -97,13 +97,12 @@ impl ChatData for Connection {
             return Ok(vec![]);
         }
         let mut stmt = self.prepare(
-            "SELECT * FROM (
+            "
                         SELECT * FROM chat
                         WHERE (chat.receiver_id = ?1 OR chat.sender_id = ?1)
                         ORDER BY chat.time DESC
                         LIMIT ?2
-                    )
-                ORDER BY time ASC;",
+                    ",
         )?;
         let rows = stmt.query_map((peer_id, limit), |r| {
             let time: String = r.get(4)?;

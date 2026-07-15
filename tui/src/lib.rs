@@ -29,7 +29,7 @@ use tokio::{
 use crate::{
     components::{
         confirmation_screen::ConfirmScreen, loading_screen::LoadingScreen,
-        main_component::MainComponents, new_peer::NewPeer, notification::Notification,
+        main_component::MainComponents, new_peer::InputScreen, notification::Notification,
         welcome::WelcomeScreen,
     },
     functions::keys::Keys,
@@ -96,7 +96,13 @@ impl App {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
-        let mut last_opened_chat: Option<usize> = None;
+        let sender = self.sender.clone();
+        tokio::spawn(async move {
+            loop {
+                _ = sender.send(IPCCmd::PingChat);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
         while self.running {
             terminal.draw(|f| {
                 self.set_layout(f, userid);
@@ -107,10 +113,13 @@ impl App {
                     IPCCmd::Tick => {
                         self.send(IPCCmd::PeerList).await?;
                     }
+                    IPCCmd::PingChat => {
+                        self.update_chats().await?;
+                    }
                     _ => {}
                 }
             }
-            self.manage_keys(&mut last_opened_chat).await?;
+            self.manage_keys().await?;
             self.manage_ipc()?;
         }
         Ok(())
@@ -127,10 +136,10 @@ impl App {
                     }
                 }
                 IPCRes::Connected(_, _) => {
-                    if let Screen::LoadingScreen { .. } = self.active_screen {
-                        self.active_screen = Screen::None;
-                        self.notification = Some(("Connected.".to_string(), Instant::now()));
-                    }
+                    // if let Screen::LoadingScreen { .. } = self.active_screen {
+                    // }
+                    self.active_screen = Screen::None;
+                    self.notification = Some(("Connected.".to_string(), Instant::now()));
                 }
                 IPCRes::Error(text) => {
                     self.notification = Some((text, Instant::now()));
@@ -213,21 +222,23 @@ impl App {
         }
         match self.active_screen {
             Screen::None => {}
-            Screen::PeerInputScreen {
+            Screen::InputScreen {
                 ref input,
                 ref cursor_pos,
+                ref prompt,
+                ..
             } => {
-                self.render_new_peer_block(f, input, cursor_pos);
+                self.render_input_block(f, input, prompt, cursor_pos);
             }
             Screen::LoadingScreen { ref loading_text } => {
                 self.render_loading_screen(f, loading_text);
             }
             Screen::ConfirmScreen {
                 ref prompt,
-                ref options,
-                ref idx,
+                ref yes_selected,
+                ..
             } => {
-                self.render_confirmation(f, prompt, options, idx);
+                self.render_confirmation(f, prompt, yes_selected);
             }
         }
     }
@@ -266,22 +277,17 @@ impl App {
         Ok(Some(cur_cont))
     }
 
-    pub async fn update_chats(
-        &mut self,
-        last_opened_chat: &mut Option<usize>,
-    ) -> Result<(), Box<dyn Error>> {
-        let cur_idx = self.contact_idx.selected();
-        if *last_opened_chat != cur_idx {
-            if let Some(cur_idx) = cur_idx {
-                let peer = &self.contacts[cur_idx];
-                self.send(IPCCmd::ChatList {
-                    peer_id: peer.id as u8,
-                    msg_amount: 50,
-                })
-                .await?;
-            } else {
-                self.chats.clear();
-            }
+    pub async fn update_chats(&mut self) -> Result<(), Box<dyn Error>> {
+        let abs_cur_idx = self.contact_idx.selected();
+        if let Some(cur_idx) = abs_cur_idx.clone() {
+            let peer = &self.contacts[cur_idx];
+            self.send(IPCCmd::ChatList {
+                peer_id: peer.id as u8,
+                msg_amount: 50,
+            })
+            .await?;
+        } else {
+            self.chats.clear();
         }
         Ok(())
     }

@@ -1,7 +1,12 @@
 prog := conan
 server := conan-server
 
-install_path := /usr/bin/
+install_path := $(CARGO_HOME)/bin
+config_path := $(HOME)/.config/conan/
+ifndef CARGO_HOME
+	install_path := $(HOME)/.local/share/cargo/bin
+endif
+
 
 default: install
 
@@ -10,7 +15,11 @@ compile:
 
 copy:
 	echo "Installing to $(install_path)"
-	./install.sh
+	cp -f target/release/$(prog) "$(install_path)"
+	cp -f target/release/$(server) "$(install_path)"
+	rm -rf $(config_path)
+	mkdir -p "$(config_path)"
+	cp -f example/conan.toml "$(config_path)"
 
 
 install: compile copy

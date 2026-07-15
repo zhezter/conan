@@ -13,16 +13,13 @@ pub const ARTI_KEYSTORE: &str = "/.conan/tor_state";
 pub const ARTI_PRIVATE_KEY: &str = "/keystore/hss/conan-daemon/ks_hs_id.ed25519_expanded_private";
 
 /// Cache path for arti client
-pub const CACHE_PATH: &str = "/var/cache/conan/";
+pub const CACHE_PATH: &str = "/.conan/cache";
 
 /// Socket Location of daemon socket for inter process communication
-pub const DAEMON_SOCKET: &str = "/var/conan/conan.socket";
-
-/// Socket Directory of daemon socket for inter process communication
-pub const DAEMON_DIRECTORY: &str = "/var/conan";
+pub const DAEMON_SOCKET: &str = "/.conan/conan.socket";
 
 /// Config File Path
-pub const CONFIG_PATH: &str = "/.conan/conan.toml";
+pub const CONFIG_PATH: &str = "/.config/conan/conan.toml";
 
 /// Databse Path
 pub const DATABASE_PATH: &str = "/.conan/database";

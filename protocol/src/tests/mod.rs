@@ -38,14 +38,24 @@ fn test_cryptography() {
 //     // this is the link that got generated on my end, and WILL be different on yours.
 //     // change it when testing
 //     let p1_hsid = "sg6ifrxlrrjbvslgfdodqxs27zfngheayftxhdenblpmerjcclr4raad.onion";
-//     let p2_hs
 //     let key_path = parse_config().unwrap().arti_key_store;
-//     let signing_key = signing_key(key_path).unwrap();
+//     let signing_key = signing_key(key_path).await.unwrap();
 //     let (mut p1_sock, mut p2_sock) = tokio::io::duplex(100);
 //
 //     tokio::spawn(async move {
 //         let (mut reader, mut writer) = tokio::io::split(p1_sock);
 //         let mut ssk = None;
-//         dialer_actor(&mut reader, &mut writer, &mut ssk, local_hsid, peer_addr).await;
+//         dialer_actor(
+//             key_path,
+//             &mut reader,
+//             &mut writer,
+//             &mut ssk,
+//             local_hsid,
+//             peer_addr,
+//         )
+//         .await;
+//     });
+//     tokio::spawn(async move {
+//         let (mut reader, mut writer) = tokio::io::split(p2_sock);
 //     });
 // }

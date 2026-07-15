@@ -70,7 +70,9 @@ pub fn parse_config() -> Result<ConanConfig, Box<dyn std::error::Error>> {
     {
         path
     } else {
-        DAEMON_SOCKET.into()
+        let mut key_path = home_path.clone();
+        key_path.push_str(DAEMON_SOCKET);
+        key_path
     };
     let arti_key_store = if let Some(s) = args.key {
         s
@@ -90,7 +92,9 @@ pub fn parse_config() -> Result<ConanConfig, Box<dyn std::error::Error>> {
     {
         path
     } else {
-        CACHE_PATH.to_string()
+        let mut key_path = home_path.clone();
+        key_path.push_str(CACHE_PATH);
+        key_path
     };
 
     let db_path = if let Some(c) = args.db_path {

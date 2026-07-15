@@ -5,19 +5,16 @@ use crossterm::event::{self, Event, KeyCode};
 
 use crate::{
     App,
-    functions::terminal_control::TerminalControl,
+    functions::{ConfirmMode, InputMode, terminal_control::TerminalControl},
     matches::{Screen, Tab},
 };
 
 pub trait Keys {
-    fn manage_keys(
-        &mut self,
-        last_opened_chat: &mut Option<usize>,
-    ) -> impl Future<Output = std::io::Result<()>>;
+    fn manage_keys(&mut self) -> impl Future<Output = std::io::Result<()>>;
 }
 
 impl Keys for App {
-    async fn manage_keys(&mut self, last_opened_chat: &mut Option<usize>) -> std::io::Result<()> {
+    async fn manage_keys(&mut self) -> std::io::Result<()> {
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
         {
@@ -32,10 +29,33 @@ impl Keys for App {
                             *cursor_pos += 1;
                         }
                     }
+                    KeyCode::Char('d') if matches!(self.tab, Tab::Contact) => {
+                        let Ok(Some(conn)) = self.current_contact() else {
+                            return Ok(());
+                        };
+                        self.active_screen = Screen::ConfirmScreen {
+                            prompt: format!("Are you sure you want to delete {}?", conn.name),
+                            yes_selected: false,
+                            mode: ConfirmMode::DeletePeer,
+                        };
+                    }
+                    KeyCode::Char('r') if matches!(self.tab, Tab::Contact) => {
+                        let Ok(Some(conn)) = self.current_contact() else {
+                            return Ok(());
+                        };
+                        self.active_screen = Screen::InputScreen {
+                            input: conn.name.clone(),
+                            cursor_pos: conn.name.len(),
+                            prompt: "Peer Name".into(),
+                            mode: InputMode::RenamePeer,
+                        };
+                    }
                     KeyCode::Char('a') => {
-                        self.active_screen = Screen::PeerInputScreen {
+                        self.active_screen = Screen::InputScreen {
                             input: String::new(),
                             cursor_pos: 0,
+                            prompt: "New Peer".to_string(),
+                            mode: InputMode::NewPeer,
                         }
                     }
                     KeyCode::Char('i') => {
@@ -53,7 +73,6 @@ impl Keys for App {
                                 self.contact_idx.select_next();
                             }
                         }
-                        self.update_chats(last_opened_chat).await;
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
                         if self.tab == Tab::Contact {
@@ -67,7 +86,6 @@ impl Keys for App {
                                 self.contact_idx.select_previous();
                             }
                         }
-                        self.update_chats(last_opened_chat).await;
                     }
                     KeyCode::Char('q') => {
                         self.running = false;
@@ -162,34 +180,25 @@ impl Keys for App {
                     }
                     _ => {}
                 },
-                Screen::PeerInputScreen {
+                Screen::InputScreen {
                     ref mut input,
                     ref mut cursor_pos,
+                    ref mut mode,
+                    ..
                 } => match key.code {
                     KeyCode::Char(ch) => {
                         input.insert(*cursor_pos, ch);
-                        self.active_screen = Screen::PeerInputScreen {
-                            input: input.clone(),
-                            cursor_pos: *cursor_pos + 1,
-                        }
+                        *cursor_pos += 1;
                     }
                     KeyCode::Backspace => {
                         if *cursor_pos > 0 {
                             *cursor_pos -= 1;
                             input.remove(*cursor_pos);
                         }
-                        self.active_screen = Screen::PeerInputScreen {
-                            input: input.clone(),
-                            cursor_pos: *cursor_pos,
-                        }
                     }
                     KeyCode::Delete => {
                         if (0..input.len()).contains(cursor_pos) {
                             input.remove(*cursor_pos);
-                        }
-                        self.active_screen = Screen::PeerInputScreen {
-                            input: input.clone(),
-                            cursor_pos: *cursor_pos,
                         }
                     }
                     KeyCode::Left => {
@@ -202,13 +211,25 @@ impl Keys for App {
                             *cursor_pos += 1;
                         }
                     }
-                    KeyCode::Enter => {
-                        let msg = IPCCmd::Connect(input.clone(), 80);
-                        self.send(msg).await?;
-                        self.active_screen = Screen::LoadingScreen {
-                            loading_text: "Adding peer...".to_string(),
-                        };
-                    }
+                    KeyCode::Enter => match mode {
+                        InputMode::NewPeer => {
+                            let msg = IPCCmd::Connect(input.clone(), 80);
+                            self.send(msg).await?;
+                            self.active_screen = Screen::LoadingScreen {
+                                loading_text: "Adding peer...".to_string(),
+                            };
+                        }
+                        InputMode::RenamePeer => {
+                            let Some(idx) = self.contact_idx.selected() else {
+                                return Ok(());
+                            };
+                            let Some(peer) = self.contacts.get(idx) else {
+                                return Ok(());
+                            };
+                            let msg = IPCCmd::RenamePeer(peer.id as u8, input.clone());
+                            self.send(msg).await?;
+                        }
+                    },
                     KeyCode::Esc => {
                         self.active_screen = Screen::None;
                     }
@@ -216,23 +237,11 @@ impl Keys for App {
                 },
                 Screen::LoadingScreen { .. } => {}
                 Screen::ConfirmScreen {
-                    ref options,
-                    ref mut idx,
+                    ref mut yes_selected,
                     ..
                 } => match key.code {
-                    KeyCode::Left => {
-                        if *idx == 0 {
-                            *idx = options.len() - 1;
-                        } else {
-                            *idx -= 1;
-                        }
-                    }
-                    KeyCode::Right => {
-                        if *idx == options.len() - 1 {
-                            *idx = 0;
-                        } else {
-                            *idx += 1;
-                        }
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('h') => {
+                        *yes_selected = !*yes_selected;
                     }
                     _ => {}
                 },
