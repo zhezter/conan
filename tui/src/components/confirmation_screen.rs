@@ -1,3 +1,4 @@
+use clap::builder::styling::Style;
 use ratatui::{
     Frame,
     layout::Constraint,
@@ -16,16 +17,17 @@ pub trait ConfirmScreen {
 impl ConfirmScreen for App {
     fn render_confirmation(&self, f: &mut Frame<'_>, text: &str, yes_selected: &bool) {
         let area = f.area();
+        let width = if text.len() < 50 { 50 } else { text.len() + 20 };
         let con_area = area
             .centered_vertically(Constraint::Max(5))
-            .centered_horizontally(Constraint::Max(30));
+            .centered_horizontally(Constraint::Length(width as u16));
         let mut options = vec![];
         if *yes_selected {
-            options.push(Span::from("Yes").on_blue());
-            options.push(Span::from("No"));
+            options.push(Span::from(" Yes ").on_blue());
+            options.push(Span::from(" No "));
         } else {
-            options.push(Span::from("Yes"));
-            options.push(Span::from("No").on_blue());
+            options.push(Span::from(" Yes "));
+            options.push(Span::from(" No ").on_blue());
         }
         let block = Block::new()
             .title(" Confirm ")
