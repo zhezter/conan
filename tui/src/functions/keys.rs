@@ -52,31 +52,22 @@ impl Keys for App {
                             } else {
                                 self.contact_idx.select_next();
                             }
-                            let cur_idx = self.contact_idx.selected();
-                            if *last_opened_chat != cur_idx {
-                                if let Some(cur_idx) = cur_idx {
-                                    let peer = &self.contacts[cur_idx];
-                                    self.send(IPCCmd::ChatList {
-                                        peer_id: peer.id as u8,
-                                        msg_amount: 50,
-                                    })
-                                    .await?;
-                                } else {
-                                    self.chats.clear();
-                                }
-                            }
                         }
+                        self.update_chats(last_opened_chat).await;
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
                         if self.tab == Tab::Contact {
                             if let Some(idx) = self.contact_idx.selected()
                                 && idx == 0
                             {
-                                self.contact_idx.select_last();
+                                if let Some(idx) = self.contact_idx.selected_mut() {
+                                    *idx = self.contacts.len() - 1;
+                                }
                             } else {
                                 self.contact_idx.select_previous();
                             }
                         }
+                        self.update_chats(last_opened_chat).await;
                     }
                     KeyCode::Char('q') => {
                         self.running = false;
@@ -104,14 +95,14 @@ impl Keys for App {
                         }
                     }
                     KeyCode::Enter => {
-                        let id = if let Some(idx) = self.contact_idx.selected()
+                        let target = if let Some(idx) = self.contact_idx.selected()
                             && let Some(target) = self.contacts.get(idx)
                         {
                             Some((target.id, target.address.clone()))
                         } else {
                             None
                         };
-                        let Some((id, addr)) = id else {
+                        let Some((id, addr)) = target else {
                             return Ok(());
                         };
                         match self.tab {
@@ -140,9 +131,9 @@ impl Keys for App {
                                         println!("Peer not found.");
                                         return Ok(());
                                     };
-                                    let chat = Chat::build(&self.chat_buf, 1, current_peer.id);
-                                    self.chat_buf = String::new();
+                                    let chat = Chat::chat_to_send(&self.chat_buf, current_peer.id);
                                     self.chats.push(chat);
+                                    self.chat_buf = String::new();
                                 }
                                 Mode::Insert { ref mut cursor_pos } => {
                                     self.chat_buf.insert(*cursor_pos, '\n');

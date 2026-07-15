@@ -5,7 +5,7 @@ use ratatui::{
     style::{Color, Style},
     symbols::border,
     text::Line,
-    widgets::{Block, Borders, List, ListItem},
+    widgets::{Block, Borders, List, ListDirection, ListItem},
 };
 
 use crate::App;
@@ -33,6 +33,17 @@ impl MainComponents for App {
             let line_area = chat_block.inner(area);
             f.render_widget(line, line_area);
         }
+        let chats = self
+            .chats
+            .iter()
+            .map(|c| {
+                let sub = if c.sender_id == 1 { "you" } else { "they" };
+                format!("{} - {}", sub, c.data)
+            })
+            .collect::<Vec<_>>();
+        let chats = List::new(chats).direction(ListDirection::BottomToTop);
+        let chats_area = chat_block.inner(area);
+        f.render_widget(chats, chats_area);
         f.render_widget(chat_block, area);
     }
 
