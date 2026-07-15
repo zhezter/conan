@@ -28,6 +28,32 @@ impl Chat {
             time,
         }
     }
+
+    #[must_use]
+    /// This is for creating Chat Struct that will be sent to peer.
+    pub fn chat_to_send(text: &str, rec: u32) -> Self {
+        let time = Utc::now().to_string();
+        Self {
+            id: 0,
+            sender_id: 1,
+            receiver_id: rec,
+            data: text.into(),
+            time,
+        }
+    }
+
+    #[must_use]
+    /// This is for creating Chat Struct that we received from peer.
+    pub fn chat_to_rec(text: &str, sen: u32) -> Self {
+        let time = Utc::now().to_string();
+        Self {
+            id: 0,
+            sender_id: sen,
+            receiver_id: 1,
+            data: text.into(),
+            time,
+        }
+    }
 }
 
 pub trait ChatData {
@@ -51,10 +77,6 @@ impl ChatData for Connection {
         let mut query = self.prepare("SELECT * FROM chat")?;
         let rows = query.query_map([], |c| {
             let time: String = c.get(4)?;
-            let time = DateTime::parse_from_str(&time, "YYYY-MM-DD HH:MM:SS")
-                .unwrap()
-                .to_utc()
-                .to_string();
             Ok(Chat {
                 id: c.get(0)?,
                 sender_id: c.get(1)?,
@@ -71,7 +93,18 @@ impl ChatData for Connection {
     }
 
     fn list_chat_from(&self, peer_id: u8, limit: u8) -> Result<Vec<Chat>, Box<dyn Error>> {
-        let mut stmt = self.prepare("SELECT * FROM chat WHERE (chat.receiver_id = ?1 OR chat.sender_id = ?1) ORDER BY chat.time DESC LIMIT ?2")?;
+        if peer_id == 1 {
+            return Ok(vec![]);
+        }
+        let mut stmt = self.prepare(
+            "SELECT * FROM (
+                        SELECT * FROM chat
+                        WHERE (chat.receiver_id = ?1 OR chat.sender_id = ?1)
+                        ORDER BY chat.time DESC
+                        LIMIT ?2
+                    )
+                ORDER BY time ASC;",
+        )?;
         let rows = stmt.query_map((peer_id, limit), |r| {
             let time: String = r.get(4)?;
             // println!("time: {time:?}");
