@@ -55,7 +55,7 @@ cache-path = "path/to/cache"
 key-path = "path/to/crypto/keys"
 ```
 
-Some examples are provided to you in ![examples](examples/).
+Some examples are provided to you in ![examples](example/).
 
 ## Flags
 
@@ -106,6 +106,7 @@ conan -s <socket path> \
 | `Tab`                 | Switches between Contact and Chats                                          |
 | `j`, `k`,`Up`, `Down` | Movement across Contacts                                                    |
 | `a`                   | Add new Peer                                                                |
+| `r`                   | Rename Peer                                                                 |
 | `d`                   | Delete Contact                                                              |
 | `i`                   | Enter Insert Mode (beta)                                                    |
 | `Enter`               | Connects Contact, Send Messages, Affirm Input and Confirmation Screens etc. |
