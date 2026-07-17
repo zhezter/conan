@@ -2,7 +2,7 @@
 
 set -e
 
-# Ensure Script in sudo
+# Ensure Script runs as sudo
 if [ "$EUID" -ne 0 ]; then
   echo "Please run the installation script using sudo."
   exit 1
@@ -11,28 +11,30 @@ fi
 DAEMON_NAME="conan-server"
 CLIENT_NAME="conan"
 SYSTEMD_PATH="/etc/systemd/system"
-RUNIT_PATH="/etc/sv/"
+RUNIT_PATH="/etc/sv"
 
+# Standardized to /usr/local/bin
 DAEMON_PATH="/usr/bin/$DAEMON_NAME"
 CLIENT_PATH="/usr/bin/$CLIENT_NAME"
 
 echo "Make sure you ran \"cargo build --release\""
-echo "Starting installation in 1 secs"
+echo "Starting installation..."
 sleep 1
 
-echo "Installing Binary..."
+echo "Installing Binaries..."
 cp -f ./target/release/$DAEMON_NAME "$DAEMON_PATH"
 cp -f ./target/release/$CLIENT_NAME "$CLIENT_PATH"
 chmod 755 "$DAEMON_PATH"
+chmod 755 "$CLIENT_PATH"
 
-echo "Detecting Service Manager"
+echo "Detecting Service Manager..."
 
 if [ -d "$SYSTEMD_PATH" ] && command -v systemctl >/dev/null 2>&1; then
   echo "Detected systemd, installing systemd service"
 
   cat <<EOF >"$SYSTEMD_PATH/$DAEMON_NAME.service"
 [Unit]
-Description=Beacond Network Manager
+Description=Conan Tor Chat
 After=network.target
 
 [Service]
@@ -40,30 +42,39 @@ ExecStart=$DAEMON_PATH
 Type=simple
 Restart=on-failure
 RestartSec=5
+# SECURITY: Prevents the daemon from running as root. 
+# DynamicUser creates an isolated, transient system user on the fly.
+DynamicUser=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
   systemctl daemon-reload
   systemctl enable "$DAEMON_NAME.service"
   systemctl start "$DAEMON_NAME.service"
+
 elif [ -d "$RUNIT_PATH" ] && command -v sv >/dev/null 2>&1; then
-  echo "Detected Runit, installing runit service"
+  echo "Detected Runit, Installing runit service"
   mkdir -p "$RUNIT_PATH/$DAEMON_NAME/log"
   mkdir -p "/var/log/$DAEMON_NAME"
 
   cat <<EOF >"$RUNIT_PATH/$DAEMON_NAME/run"
-#!/bin/bash
-exec $DAEMON_PATH 2>&1
+#!/bin/sh
+# SECURITY: Drops root privileges to run as 'nobody'
+exec chpst -u nobody:nogroup $DAEMON_PATH 2>&1
 EOF
 
   cat <<EOF >"$RUNIT_PATH/$DAEMON_NAME/log/run"
-#!/bin/bash
+#!/bin/sh
 exec svlogd -tt /var/log/$DAEMON_NAME
 EOF
 
   chmod +x "$RUNIT_PATH/$DAEMON_NAME/run"
   chmod +x "$RUNIT_PATH/$DAEMON_NAME/log/run"
+
+  # Ensure the log directory is writable by the dropped-privilege user
+  chown -R nobody:nogroup "/var/log/$DAEMON_NAME"
 
   if [ -d "/var/service" ]; then
     ln -sf "$RUNIT_PATH/$DAEMON_NAME" "/var/service/"
@@ -71,10 +82,11 @@ EOF
     ln -sf "$RUNIT_PATH/$DAEMON_NAME" "/etc/service/"
   fi
   echo "$DAEMON_NAME registered in runit Successfully."
+
 else
   echo "Warning: No Supported Service Manager Detected."
-  echo "The binary has been installed to /usr/local/bin/$DAEMON_NAME but must be run manually."
-  echo "Try running beacond -b to run in background."
+  echo "The binary has been installed to $DAEMON_PATH but must be run manually."
+  echo "Try running: $DAEMON_NAME" # FIX: No longer mentions 'beacond'
 fi
 
 echo "Installation Complete."
