@@ -126,6 +126,10 @@ impl App {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         });
+        self.active_screen = Screen::LoadingScreen {
+            loading_text: "Starting Server...".into(),
+            mode: LoadingMode::ServerStarted,
+        };
         while self.running {
             terminal.draw(|f| {
                 self.set_layout(f, userid);
@@ -145,6 +149,7 @@ impl App {
             self.manage_keys().await?;
             self.manage_ipc()?;
         }
+        terminal.clear()?;
         Ok(())
     }
 
@@ -153,9 +158,15 @@ impl App {
         if let Some(res) = self.try_recv()? {
             match res {
                 IPCRes::ServerStarted => {
-                    if let Screen::LoadingScreen { .. } = self.active_screen {
+                    self.notification = Some(("Server Started.".into(), Instant::now()));
+                    if matches!(
+                        self.active_screen,
+                        Screen::LoadingScreen {
+                            mode: LoadingMode::ServerStarted,
+                            ..
+                        }
+                    ) {
                         self.active_screen = Screen::None;
-                        self.notification = Some(("Server Started.".to_string(), Instant::now()));
                     }
                 }
                 IPCRes::Connected(_, _) => {

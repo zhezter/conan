@@ -25,7 +25,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting Manager..");
     manager.init_server()?;
     println!("Manager Started. Establishing Message Routes..");
-    manager.setup_slave_communication()?;
+    if manager.setup_slave_communication().is_ok() {
+        manager.msg_sender.send(IPCRes::ServerStarted)?;
+    } else {
+        manager
+            .msg_sender
+            .send(IPCRes::Error("Could not Start Server.".into()))?;
+    }
     println!("All Set.");
     loop {
         if let Ok(s) = worker_receiver.recv() {

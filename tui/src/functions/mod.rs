@@ -16,4 +16,5 @@ pub enum ConfirmMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadingMode {
     NewPeer,
+    ServerStarted,
 }
