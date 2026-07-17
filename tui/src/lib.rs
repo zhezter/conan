@@ -4,12 +4,14 @@ pub mod matches;
 use std::{
     error::Error,
     io::{Cursor, Stdout},
+    process::Command,
     time::{Duration, Instant},
 };
 
 use bincode::config;
 use conanprotocol::{
     comm::enums::{IPCCmd, IPCRes, encode},
+    config::ConanConfig,
     entities::database::{chat::Chat, peer::Peer},
     msg::Mode,
 };
@@ -54,8 +56,31 @@ pub struct App {
 
 impl App {
     /// # Errors
-    pub async fn create(socket_path: &str) -> std::io::Result<Self> {
-        let stream = UnixStream::connect(socket_path).await?;
+    pub async fn create(config: ConanConfig) -> std::io::Result<Self> {
+        let socket_path = &config.socket_path;
+        let stream = match UnixStream::connect(socket_path).await {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("Could not connect. Retrying.");
+                Command::new("conan-server")
+                    .args([
+                        "-s",
+                        &config.socket_path,
+                        "-k",
+                        &config.arti_key_store,
+                        "-C",
+                        &config.cache_path,
+                        "-d",
+                        &config.db_path,
+                    ])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("Failed to start conan-server.");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                UnixStream::connect(socket_path).await?
+            }
+        };
         let time = Instant::now();
         let (sender, receiver) = tokio::sync::broadcast::channel::<IPCCmd>(100);
         Ok(Self {
@@ -201,8 +226,16 @@ impl App {
 
     fn set_layout(&mut self, f: &mut Frame<'_>, userid: &str) {
         let area = f.area();
+        let self_addr = if let Some(c) = self.contacts.first() {
+            c.address.clone()
+        } else {
+            String::new()
+        };
         let main_block = Block::new()
-            .title(Line::from(format!(" Conan - {userid} ")).alignment(HorizontalAlignment::Center))
+            .title_top(
+                Line::from(format!(" Conan - {userid} ")).alignment(HorizontalAlignment::Center),
+            )
+            .title_bottom(Line::from(self_addr).alignment(HorizontalAlignment::Right))
             .borders(Borders::NONE)
             .padding(Padding::new(1, 1, 0, 0));
 
