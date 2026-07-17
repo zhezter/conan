@@ -9,6 +9,7 @@ pub struct Peer {
     pub id: u32,
     pub name: String,
     pub address: String,
+    pub connected: bool,
 }
 
 impl Peer {
@@ -21,6 +22,7 @@ impl Peer {
             id: 0,
             name,
             address,
+            connected: false,
         }
     }
 }
@@ -32,6 +34,8 @@ pub trait PeerData {
     /// Get's name of Peer if exists else None
     /// # Errors
     fn get_peer_from_addr(&self, addr: &str) -> Result<Option<Peer>, Box<dyn Error>>;
+    /// Pulls peer Info from Local Database
+    /// # Errors
     fn get_peer_from_id(&self, id: u32) -> Result<Option<Peer>, Box<dyn Error>>;
     /// Inserts peers to Local Database
     /// # Errors
@@ -39,6 +43,9 @@ pub trait PeerData {
     /// Deletes from Local Database based on peer id
     /// # Errors
     fn delete_peer(&self, id: u32) -> Result<(), Box<dyn Error>>;
+    /// renames peer in Local Database
+    /// # Errors
+    fn rename_peer(&self, id: u32, new_name: String) -> Result<(), Box<dyn Error>>;
 }
 
 impl PeerData for Connection {
@@ -50,6 +57,7 @@ impl PeerData for Connection {
                 id: p.get(0)?,
                 name: p.get(1)?,
                 address: p.get(2)?,
+                connected: false,
             })
         })?;
         for r in rows {
@@ -66,6 +74,7 @@ impl PeerData for Connection {
                 id: r.get(0)?,
                 name: r.get(1)?,
                 address: r.get(2)?,
+                connected: false,
             })
         });
         let peer = match result {
@@ -87,6 +96,7 @@ impl PeerData for Connection {
                 id: r.get(0)?,
                 name: r.get(1)?,
                 address: r.get(2)?,
+                connected: false,
             })
         });
         let peer = match result {
@@ -115,6 +125,7 @@ impl PeerData for Connection {
                             id: r.get(0)?,
                             name: r.get(1)?,
                             address: r.get(2)?,
+                            connected: false,
                         })
                     });
                 Ok(stmt?)
@@ -134,5 +145,11 @@ impl PeerData for Connection {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn rename_peer(&self, id: u32, new_name: String) -> Result<(), Box<dyn Error>> {
+        let mut stmt = self.prepare("UPDATE peer SET name = ?1 WHERE id = ?2")?;
+        stmt.execute((new_name, id))?;
+        Ok(())
     }
 }

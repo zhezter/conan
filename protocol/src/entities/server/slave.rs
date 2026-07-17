@@ -29,7 +29,6 @@ pub struct Slave {
     pub msg_sender: broadcast::Sender<IPCRes>,
     pub service: Arc<RunningOnionService>,
     pub config: ConanConfig,
-    pub dbconn: Connection,
 }
 
 impl Slave {
@@ -52,7 +51,6 @@ impl Slave {
                 match recv(&mut reader, Arc::clone(&ssk)).await {
                     Ok(data) => {
                         let msg = Msg::from_bytes(&data);
-                        println!("msg: {msg:?}");
                         let msg = (id, Internal::Msg(msg));
                         _ = response_sender.send(msg.clone());
                         threshold = 5;
@@ -104,11 +102,12 @@ impl Slave {
         let Some(remote_hsid) = remote_onion_key else {
             return Err("No Remote HsId key assigned. Aborting.".into());
         };
-        let peer = if let Some(peer) = self.dbconn.get_peer_from_addr(&remote_hsid)? {
+        let dbconn = Connection::open(&self.config.db_path)?;
+        let peer = if let Some(peer) = dbconn.get_peer_from_addr(&remote_hsid)? {
             peer
         } else {
             let name = generate_name(random_range(4..10));
-            self.dbconn.insert_peer(Peer::build(&name, &remote_hsid))?
+            dbconn.insert_peer(Peer::build(&name, &remote_hsid))?
         };
         let name = peer.name;
         #[allow(clippy::cast_possible_truncation)]
