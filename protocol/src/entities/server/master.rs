@@ -10,6 +10,7 @@ use tor_hsservice::HsId;
 use crate::{
     comm::enums::{IPCCmd, IPCRes, encode},
     config::parse_config,
+    debug,
 };
 
 #[derive(Debug)]
@@ -45,7 +46,7 @@ impl Master {
         let sock_path = config.socket_path.clone();
         let mut sock_dir = sock_path.split('/').collect::<Vec<_>>();
         sock_dir.pop();
-        _ = fs::create_dir_all(sock_dir.join(""));
+        _ = fs::create_dir_all(sock_dir.join("/"));
         if let Err(e) = fs::remove_file(&sock_path) {
             println!("fs error: {e}");
         }
