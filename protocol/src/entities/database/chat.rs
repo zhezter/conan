@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use bincode::{Decode, Encode};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
