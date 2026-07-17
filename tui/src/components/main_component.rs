@@ -85,7 +85,13 @@ impl MainComponents for App {
         let list_items = self
             .contacts
             .iter()
-            .map(|i| ListItem::new(i.name.clone()).style(Style::default()))
+            .map(|i| {
+                ListItem::new(i.name.clone()).style(if i.connected {
+                    Style::new().green()
+                } else {
+                    Style::default()
+                })
+            })
             .collect::<Vec<_>>();
         let contact_list = List::new(list_items)
             .block(left_block)

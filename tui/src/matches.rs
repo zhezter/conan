@@ -1,6 +1,6 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-use crate::functions::{ConfirmMode, InputMode};
+use crate::functions::{ConfirmMode, InputMode, LoadingMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tab {
@@ -27,6 +27,7 @@ pub enum Screen {
     },
     LoadingScreen {
         loading_text: String,
+        mode: LoadingMode,
     },
     ConfirmScreen {
         prompt: String,

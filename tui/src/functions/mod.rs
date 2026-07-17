@@ -12,3 +12,8 @@ pub enum ConfirmMode {
     Exit,
     DeletePeer,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadingMode {
+    NewPeer,
+}

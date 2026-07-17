@@ -6,7 +6,7 @@ use safelog::DisplayRedacted;
 use std::{
     collections::HashMap,
     error::Error,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, RwLock},
     time::Duration,
 };
 use tokio::sync::broadcast;
@@ -31,12 +31,12 @@ use crate::{
 };
 
 pub struct Manager {
-    tor_client: Arc<TorClient<tor_rtcompat::PreferredRuntime>>,
+    pub tor_client: Arc<TorClient<tor_rtcompat::PreferredRuntime>>,
     /// NOTE: Only for assigning to `Slaves`, not to be used by manager itself
-    response_sender: broadcast::Sender<(u8, Internal)>,
+    pub response_sender: broadcast::Sender<(u8, Internal)>,
 
-    stream: Option<BoxStream<'static, RendRequest>>,
-    service: Arc<RunningOnionService>,
+    pub stream: Option<BoxStream<'static, RendRequest>>,
+    pub service: Arc<RunningOnionService>,
     pub dbconn: Connection,
 
     /// Channel for sending message to Master
@@ -44,7 +44,7 @@ pub struct Manager {
     /// Used for receiving messages from Slaves and transferring them to Master
     pub response_receiver: broadcast::Receiver<(u8, Internal)>,
     /// `HashMap` for tracking active peers
-    pub peers: Arc<Mutex<HashMap<u8, Slave>>>,
+    pub peers: Arc<RwLock<HashMap<u8, Slave>>>,
     /// Paths chosen during startup
     pub config: ConanConfig,
 }
@@ -101,7 +101,7 @@ impl Manager {
 
         Ok(Self {
             tor_client,
-            peers: Arc::new(Mutex::new(HashMap::new())),
+            peers: Arc::new(RwLock::new(HashMap::new())),
             stream: Some(request_stream.boxed()),
             service,
             dbconn: Connection::open(&config.db_path)?,
@@ -160,7 +160,6 @@ impl Manager {
                                                 service,
                                                 msg_sender,
                                                 response_sender,
-                                                dbconn: Connection::open(&config.db_path).unwrap(),
                                                 config,
                                                 shared_secret_key: Arc::new(RwLock::new([0u8; 32])),
                                             };
@@ -175,9 +174,10 @@ impl Manager {
                                                 println!(
                                                     "Slave Communication Pipeline Established."
                                                 );
-                                                let mut guard = peers.lock().unwrap();
-                                                guard.insert(peer_idx, conn);
-                                            }
+                                            };
+                                            if let Ok(mut peers) = peers.write() {
+                                                peers.insert(peer_idx, conn);
+                                            };
                                         }
                                         Err(e) => {
                                             eprintln!("Error in connecting to peer: {e}");
@@ -220,7 +220,7 @@ impl Manager {
             let peer = dbconn.get_peer_from_addr(&peer_addr.0)?;
             if let Some(peer) = peer {
                 #[allow(clippy::cast_possible_truncation)]
-                if peers.lock().unwrap().contains_key(&(peer.id as u8)) {
+                if peers.read().unwrap().contains_key(&(peer.id as u8)) {
                     msg_sender.send(IPCRes::Connected(peer_addr.0, peer_addr.1))?;
                     msg_sender.send(IPCRes::Notification(format!(
                         "Already connected to {}",
@@ -307,14 +307,13 @@ impl Manager {
                 reader: Some(reader),
                 writer,
                 service,
-                dbconn: Connection::open(&config.db_path).unwrap(),
                 config,
                 msg_sender: msg_sender.clone(),
                 response_sender,
                 shared_secret_key: Arc::new(RwLock::new(shared_secret_key)),
             };
             if conn.spawn_communication().is_ok() {
-                let mut peers = peers.lock().unwrap();
+                let mut peers = peers.write().unwrap();
                 #[allow(clippy::cast_possible_truncation)]
                 peers.insert(idx as u8, conn);
                 trans.commit().unwrap();
@@ -368,10 +367,13 @@ impl Manager {
                         _ => continue,
                     },
                     Internal::RemovePeer(idx) => {
-                        if let Ok(mut guard) = peers.lock()
+                        if let Ok(mut guard) = peers.write()
                             && let Some(conn) = guard.remove(&idx)
                         {
                             println!("Removing Connection: {}", conn.id);
+                            if let Ok(Some(peer)) = dbconn.get_peer_from_id(u32::from(conn.id)) {
+                                _ = ConanNotif::Sys(format!("{} disconnected.", peer.name));
+                            }
                         }
                     }
                     _ => continue,
@@ -384,3 +386,130 @@ impl Manager {
         Ok(())
     }
 }
+
+// pub async fn connect_as_dialer(
+//     msg_sender: broadcast::Sender<IPCRes>,
+//     response_sender: broadcast::Sender<(u8, Internal)>,
+//     tor_client: Arc<TorClient<PreferredRuntime>>,
+//     service: Arc<RunningOnionService>,
+//     peers: Arc<RwLock<HashMap<u8, Slave>>>,
+//     config: ConanConfig,
+//     peer_addr: (String, u16),
+// ) -> Result<PeerStatus, Box<dyn Error>> {
+//     let tor_client = Arc::clone(&tor_client);
+//     let msg_sender = msg_sender.clone();
+//     let mut dbconn = Connection::open(&config.db_path)?;
+//     let response_sender = response_sender.clone();
+//     let peers = Arc::clone(&peers);
+//     if let Some(hsid) = service.onion_address()
+//         && peer_addr.0 == hsid.display_unredacted().to_string()
+//     {
+//         msg_sender.send(IPCRes::Error("Cannot connect to Self.".to_string()))?;
+//         return Ok(PeerStatus::NotFound);
+//     }
+//     // checking if peer is already in our connection
+//     {
+//         let peer = dbconn.get_peer_from_addr(&peer_addr.0)?;
+//         if let Some(peer) = peer {
+//             #[allow(clippy::cast_possible_truncation)]
+//             if peers.read().unwrap().contains_key(&(peer.id as u8)) {
+//                 msg_sender.send(IPCRes::Connected(peer_addr.0, peer_addr.1))?;
+//                 msg_sender.send(IPCRes::Notification(format!(
+//                     "Already connected to {}",
+//                     peer.name
+//                 )))?;
+//                 return Ok(PeerStatus::Connected);
+//             }
+//         }
+//     }
+//     println!("Connecting to peer...");
+//     let mut stream = None;
+//
+//     for i in 1..=5 {
+//         match tor_client.connect(&peer_addr).await {
+//             Ok(s) => {
+//                 stream = Some(s);
+//                 break;
+//             }
+//             Err(e) => eprintln!("Error while connecting: {e}"),
+//         }
+//         if i == 5 {
+//             msg_sender
+//                 .send(IPCRes::Error("Failed to Connect.".to_string()))
+//                 .unwrap();
+//         } else {
+//             msg_sender
+//                 .send(IPCRes::Notification(format!(
+//                     "Retrying Connection. [{i}/5]"
+//                 )))
+//                 .unwrap();
+//             eprintln!("Retrying...");
+//         }
+//     }
+//     let Some(stream) = stream else {
+//         msg_sender.send(IPCRes::Error(format!(
+//             "Could not connect to {}. Make sure the address is correct and server active..",
+//             peer_addr.0
+//         )))?;
+//         return Ok(PeerStatus::NotFound);
+//     };
+//     let (mut reader, mut writer) = tokio::io::split(stream);
+//     let mut shared_secret_key = None;
+//
+//     let local_hsid = service
+//         .onion_address()
+//         .ok_or("Onion Address Not found.")
+//         .unwrap();
+//     if let Err(e) = dialer_actor(
+//         config.arti_key_store.clone(),
+//         &mut reader,
+//         &mut writer,
+//         &mut shared_secret_key,
+//         local_hsid,
+//         &peer_addr,
+//     )
+//     .await
+//     {
+//         let msg = format!("Error while Reaching out.\n{e}");
+//         msg_sender.send(IPCRes::Error(msg)).unwrap();
+//         return Err(e);
+//     }
+//     let Some(shared_secret_key) = shared_secret_key else {
+//         return Err("Could not parse Shared Secret Key. Aborting.".into());
+//     };
+//     let known = dbconn.get_peer_from_addr(&peer_addr.0).unwrap();
+//     let trans = dbconn.transaction().unwrap();
+//     let name = generate_name(random_range(3..10));
+//     let idx = if let Some(known_peer) = known {
+//         known_peer.id
+//     } else {
+//         let peer = Peer::build(&name, &peer_addr.0);
+//         let peer = trans.insert_peer(peer).unwrap();
+//         peer.id
+//     };
+//
+//     let mut conn = Slave {
+//         #[allow(clippy::cast_possible_truncation)]
+//         id: idx as u8,
+//         reader: Some(reader),
+//         writer,
+//         service,
+//         config,
+//         msg_sender: msg_sender.clone(),
+//         response_sender,
+//         shared_secret_key: Arc::new(RwLock::new(shared_secret_key)),
+//     };
+//     if conn.spawn_communication().is_ok() {
+//         let mut peers = peers.write().unwrap();
+//         #[allow(clippy::cast_possible_truncation)]
+//         peers.insert(idx as u8, conn);
+//         trans.commit().unwrap();
+//     } else {
+//         _ = trans.rollback();
+//     }
+//     println!("Exchange Complete..");
+//     msg_sender
+//         .send(IPCRes::Connected(peer_addr.0, peer_addr.1))
+//         .unwrap();
+//     Ok(PeerStatus::Connected)
+// }

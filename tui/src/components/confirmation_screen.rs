@@ -1,4 +1,3 @@
-use clap::builder::styling::Style;
 use ratatui::{
     Frame,
     layout::Constraint,
@@ -18,9 +17,11 @@ impl ConfirmScreen for App {
     fn render_confirmation(&self, f: &mut Frame<'_>, text: &str, yes_selected: &bool) {
         let area = f.area();
         let width = if text.len() < 50 { 50 } else { text.len() + 20 };
+        #[allow(clippy::cast_possible_truncation)]
+        let width = width as u16;
         let con_area = area
             .centered_vertically(Constraint::Max(5))
-            .centered_horizontally(Constraint::Length(width as u16));
+            .centered_horizontally(Constraint::Length(width));
         let mut options = vec![];
         if *yes_selected {
             options.push(Span::from(" Yes ").on_blue());
