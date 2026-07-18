@@ -7,8 +7,8 @@ use crate::msg::Msg;
 #[test]
 /// Tests encryption and decryption using Double Ratchet
 fn test_cryptography() {
-    use crate::operations::derive_bob_ratchet_key;
     use crate::crypto::ratchet::RatchetSession;
+    use crate::operations::derive_bob_ratchet_key;
 
     let msg = Msg::Text("This is a test text".to_string());
 

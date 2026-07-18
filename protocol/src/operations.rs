@@ -1,8 +1,8 @@
+use crate::crypto::aead::{self, EncryptedMessage, MessageKey};
+use crate::crypto::ratchet::{RatchetMessage, RatchetSession};
 use crate::{constants::ARTI_PRIVATE_KEY, msg::Msg};
 use arti_client::DataStream;
 use base64::Engine;
-use crate::crypto::aead::{self, EncryptedMessage, MessageKey};
-use crate::crypto::ratchet::{RatchetMessage, RatchetSession};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey, ed25519::signature::rand_core::OsRng};
 use futures::AsyncReadExt as FutureRead;
 use safelog::DisplayRedacted;

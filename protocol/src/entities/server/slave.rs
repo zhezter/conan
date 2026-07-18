@@ -1,5 +1,5 @@
-use arti_client::DataStream;
 use crate::crypto::ratchet::RatchetSession;
+use arti_client::DataStream;
 use rand::random_range;
 use rusqlite::Connection;
 use std::{error::Error, sync::Arc};
