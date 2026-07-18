@@ -1,13 +1,11 @@
 use arti_client::DataStream;
+use conan_crypto::ratchet::RatchetSession;
 use rand::random_range;
 use rusqlite::Connection;
-use std::{
-    error::Error,
-    sync::{Arc, RwLock},
-};
+use std::{error::Error, sync::Arc};
 use tokio::{
     io::{ReadHalf, WriteHalf},
-    sync::broadcast,
+    sync::{RwLock, broadcast},
 };
 use tor_hsservice::RunningOnionService;
 
@@ -19,22 +17,22 @@ use crate::{
     msg::{Internal, Msg},
     operations::{listener_actor, recv},
 };
+
 pub struct Slave {
     pub id: u8,
     pub reader: Option<ReadHalf<DataStream>>,
     pub writer: WriteHalf<DataStream>,
     pub response_sender: broadcast::Sender<(u8, Internal)>,
-    /// Shared secret key after diffie helmann exchange
-    pub shared_secret_key: Arc<RwLock<[u8; 32]>>,
+    /// Double Ratchet session for encrypted communication.
+    /// `None` before handshake completes, `Some` after.
+    pub ratchet_session: Option<Arc<RwLock<RatchetSession>>>,
     pub msg_sender: broadcast::Sender<IPCRes>,
     pub service: Arc<RunningOnionService>,
     pub config: ConanConfig,
 }
 
 impl Slave {
-    /// Consumes Self to spawn a tokio thread that forwards data from reader to response channel
-    /// Forwards as is, with no decryption
-    /// Decryptions and filtering is handled by `Manager` entity
+    /// Spawns a tokio thread that reads encrypted messages and forwards to response channel.
     ///
     /// # Errors
     /// # Panics
@@ -42,13 +40,17 @@ impl Slave {
         let Some(mut reader) = self.reader.take() else {
             return Err("No Reader Associated with Slave.".into());
         };
-        let ssk = Arc::clone(&self.shared_secret_key);
+        let ratchet = self
+            .ratchet_session
+            .as_ref()
+            .ok_or("Ratchet session not initialized")?
+            .clone();
         let response_sender = self.response_sender.clone();
         let id = self.id;
         tokio::spawn(async move {
             let mut threshold = 5;
             while threshold != 0 {
-                match recv(&mut reader, Arc::clone(&ssk)).await {
+                match recv(&mut reader, Arc::clone(&ratchet)).await {
                     Ok(data) => {
                         let msg = Msg::from_bytes(&data);
                         let msg = (id, Internal::Msg(msg));
@@ -84,21 +86,16 @@ impl Slave {
             .service
             .onion_address()
             .ok_or("Could not get Onion Address")?;
-        let mut shared_secret_key = None;
         let mut remote_onion_key = None;
-        listener_actor(
+        let (session, _remote_hsid) = listener_actor(
             self.config.arti_key_store.clone(),
             reader,
             &mut self.writer,
-            &mut shared_secret_key,
             &mut remote_onion_key,
             local_hsid,
         )
         .await?;
-        let Some(shared_secret_key) = shared_secret_key else {
-            return Err("Could not parse Shared Secret Key.".into());
-        };
-        *self.shared_secret_key.write().unwrap() = shared_secret_key;
+        self.ratchet_session = Some(Arc::new(RwLock::new(session)));
         let Some(remote_hsid) = remote_onion_key else {
             return Err("No Remote HsId key assigned. Aborting.".into());
         };
