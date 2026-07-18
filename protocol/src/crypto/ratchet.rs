@@ -4,7 +4,7 @@
 //! providing forward secrecy, break-in recovery, and header encryption for a
 //! messaging session.
 
-use crate::aead::{
+use super::aead::{
     EncryptedMessage, KeyMaterial, MessageKey, decrypt_with_aad, encrypt_with_aad, hkdf_derive,
 };
 use rand_core::OsRng;
@@ -21,7 +21,7 @@ pub enum RatchetError {
     #[error("error deriving key via HKDF")]
     HkdfExpand,
     #[error("AEAD error: {0}")]
-    Aead(#[from] crate::aead::AeadError),
+    Aead(#[from] super::aead::AeadError),
     /// Send chain is not initialised. For the sender (Alice), this indicates a
     /// bug — `init_sender` always populates the send chain. For the receiver
     /// (Bob), this means `encrypt` was called before the first DH ratchet step.

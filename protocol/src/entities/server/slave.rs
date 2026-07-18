@@ -1,5 +1,5 @@
 use arti_client::DataStream;
-use conan_crypto::ratchet::RatchetSession;
+use crate::crypto::ratchet::RatchetSession;
 use rand::random_range;
 use rusqlite::Connection;
 use std::{error::Error, sync::Arc};

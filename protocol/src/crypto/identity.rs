@@ -1,6 +1,6 @@
 //! Identity management utilities for conan.
 
-use crate::aead::{KeyMaterial, hkdf_derive};
+use super::aead::{KeyMaterial, hkdf_derive};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
