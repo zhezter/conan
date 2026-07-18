@@ -1,78 +1,47 @@
-use crate::{
-    constants::{ARTI_PRIVATE_KEY, ENCRYPTION_INFO},
-    msg::Msg,
-};
+use crate::{constants::ARTI_PRIVATE_KEY, msg::Msg};
 use arti_client::DataStream;
 use base64::Engine;
-use chacha20poly1305::{
-    ChaCha20Poly1305, KeyInit, Nonce,
-    aead::{Aead, Generate},
-};
+use conan_crypto::aead::{self, EncryptedMessage, MessageKey};
+use conan_crypto::ratchet::{RatchetMessage, RatchetSession};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey, ed25519::signature::rand_core::OsRng};
 use futures::AsyncReadExt as FutureRead;
-use hkdf::Hkdf;
 use safelog::DisplayRedacted;
-use sha2::Sha256;
 use ssh_encoding::Decode;
-use std::{
-    error::Error,
-    fs::File,
-    io::Read,
-    str::FromStr,
-    sync::{Arc, RwLock},
-};
+use std::{error::Error, fs::File, io::Read, str::FromStr, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tor_hsservice::HsId;
 use tor_llcrypto::pk::ed25519::ExpandedKeypair;
-use x25519_dalek::{EphemeralSecret, PublicKey};
+use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 
-/// Encrypts a `[Msg::msg]` turned to bytes to a vec of bytes
-/// we assume `data` is just direct serialized version of the message without any kind of wrapper etc.
-/// # Errors
-#[inline]
-pub fn encrypt(
+/// Handshake-only encryption using the static shared secret.
+/// Used during the initial handshake before ratchet is established.
+fn handshake_encrypt(
     shared_secret_key: &[u8; 32],
     data: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let hk = Hkdf::<Sha256>::new(None, shared_secret_key);
-    let mut encryption_key = [0u8; 32];
-    hk.expand(ENCRYPTION_INFO.as_bytes(), &mut encryption_key)?;
-
-    let cipher = ChaCha20Poly1305::new_from_slice(&encryption_key)?;
-    let nonce = Nonce::generate_from_rng(&mut rand::rng());
-    let cipher_text = cipher.encrypt(&nonce, data)?;
-    let mut new_cipher_text = nonce.to_vec();
-    new_cipher_text.extend(cipher_text);
-    Ok(new_cipher_text)
+    let key = MessageKey::from_bytes(*shared_secret_key);
+    let msg = aead::encrypt(&key, 0, data)?;
+    let mut out = msg.nonce.to_be_bytes().to_vec();
+    out.extend_from_slice(&msg.ciphertext);
+    Ok(out)
 }
 
-/// Decrypts a &[u8] back to message
-///
-/// # Errors
-#[inline]
-pub fn decrypt(
+/// Handshake-only decryption using the static shared secret.
+fn handshake_decrypt(
     shared_secret_key: &[u8; 32],
     data: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let nonce_bytes: [u8; 12] = match data[..12].try_into() {
-        Ok(s) => s,
-        Err(e) => return Err(format!("Cannot convert slice to nonce. {e}").into()),
-    };
-    let cipher_bytes = data[12..].to_vec();
-    let nonce = Nonce::cast_from_core(&nonce_bytes);
-    let hk = Hkdf::<Sha256>::new(None, shared_secret_key);
-    let mut encryption_key = [0u8; 32];
-    hk.expand(ENCRYPTION_INFO.as_bytes(), &mut encryption_key)?;
-    let cipher = ChaCha20Poly1305::new_from_slice(&encryption_key)?;
-    let decrypted_bytes = cipher.decrypt(nonce, cipher_bytes.as_ref())?;
-
-    Ok(decrypted_bytes)
+    if data.len() < 8 {
+        return Err("Data too short for nonce".into());
+    }
+    let nonce = u64::from_be_bytes(data[..8].try_into()?);
+    let ciphertext = data[8..].to_vec();
+    let key = MessageKey::from_bytes(*shared_secret_key);
+    let msg = EncryptedMessage { nonce, ciphertext };
+    Ok(aead::decrypt(&key, &msg)?)
 }
 
 /// Used to retrieve signing key for self tor server
-///
-/// # Errors
-/// # Panics
 pub async fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<dyn Error>> {
     let mut key_store_path = arti_key_store;
     key_store_path.push_str(ARTI_PRIVATE_KEY);
@@ -97,7 +66,6 @@ pub async fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<
     let _num_keys = u32::decode(&mut payload_slice)?;
     let _outer_pub = Vec::<u8>::decode(&mut payload_slice)?;
 
-    // 3. Extract the isolated inner private block
     let inner_block_bytes = Vec::<u8>::decode(&mut payload_slice)?;
 
     let mut inner_bytes = inner_block_bytes.as_slice();
@@ -118,7 +86,6 @@ pub async fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<
 }
 
 /// Performs Curve25519 Handshake
-/// # Errors
 pub fn x25519_handshake(
     remote_public_key: &mut Option<PublicKey>,
     local_public_key: PublicKey,
@@ -147,7 +114,6 @@ pub fn x25519_handshake(
 }
 
 /// Performs Elliptical Diffie Hellman key exchange.
-/// # Errors
 pub fn edhverify(
     local_private_key: EphemeralSecret,
     remote_public_key: PublicKey,
@@ -157,17 +123,27 @@ pub fn edhverify(
     *ssk = Some(*shared_secret_key.as_bytes());
 }
 
+/// Derive a ratchet key pair from the shared secret via HKDF.
+/// Both sides derive the same Bob ratchet key from the shared secret,
+/// so Alice can compute Bob's ratchet public key independently.
+pub fn derive_bob_ratchet_key(shared_secret: &[u8; 32]) -> (StaticSecret, PublicKey) {
+    use conan_crypto::aead::hkdf_derive;
+    let derived = hkdf_derive::<32>(shared_secret, None, b"conan-v1-bob-ratchet")
+        .expect("HKDF cannot fail with valid-length output");
+    let priv_key = StaticSecret::from(derived);
+    let pub_key = PublicKey::from(&priv_key);
+    (priv_key, pub_key)
+}
+
 /// Perform function of listener once called
-/// # Errors
-/// # Panics
+/// Returns (RatchetSession, remote_hsid) on success
 pub async fn listener_actor(
     arti_key_store: String,
     reader: &mut ReadHalf<DataStream>,
     writer: &mut WriteHalf<DataStream>,
-    ssk: &mut Option<[u8; 32]>,
     assign_remote_hsid: &mut Option<String>,
     local_hsid: HsId,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(RatchetSession, Option<String>), Box<dyn Error>> {
     // reading dialer's x25519 public key.
     let size = reader.read_u16().await? as usize;
     let mut buf = vec![0u8; size];
@@ -190,7 +166,6 @@ pub async fn listener_actor(
     let signature = signing_key.sign(&data);
 
     // remote entities should always be put before local entities
-    // because kindness & respect is one of many factors that makes us human.
     let msg = Msg::SignedAndPublicKey(
         signature.to_bytes().to_vec(),
         remote_public_key,
@@ -207,7 +182,7 @@ pub async fn listener_actor(
 
     let rpk = PublicKey::from(remote_public_key);
     let shared_secret_key = local_private_key.diffie_hellman(&rpk);
-    *ssk = Some(*shared_secret_key.as_bytes());
+    let shared_secret_bytes = *shared_secret_key.as_bytes();
 
     println!("Parsing peer's public key.");
     let size = reader.read_u16().await? as usize;
@@ -215,7 +190,7 @@ pub async fn listener_actor(
     let size = reader.read_exact(&mut buf).await?;
 
     // decrypting and reading here.
-    let decrypted = decrypt(shared_secret_key.as_bytes(), &buf[..size])?;
+    let decrypted = handshake_decrypt(&shared_secret_bytes, &buf[..size])?;
     let recv_msg = Msg::from_bytes(&decrypted);
     let Msg::SignedAndPublicKey(signature, claimed_local_hsid_bytes, claimed_remote_hsid_bytes) =
         recv_msg
@@ -242,33 +217,32 @@ pub async fn listener_actor(
     verifying_key.verify(data, &signature)?;
 
     // if verified, we proceed to send a final `Verified` message to dialer
-    // and tell it to wrap things up from its side
     println!("Verified. Sending Approval.");
-    let verified = encrypt(
-        shared_secret_key.as_bytes(),
-        Msg::Verified.to_vec().as_slice(),
-    )?;
+    let verified = handshake_encrypt(&shared_secret_bytes, Msg::Verified.to_vec().as_slice())?;
     #[allow(clippy::cast_possible_truncation)]
     writer.write_u16(verified.len() as u16).await?;
     writer.write_all(&verified).await?;
     writer.flush().await?;
 
-    // reader.read_to_end(&mut vec![]).await?;
     println!("Verification Complete.");
-    Ok(())
+
+    // Initialize ratchet session
+    // Both sides derive Bob's ratchet key from the shared secret
+    let (bob_dh, _) = derive_bob_ratchet_key(&shared_secret_bytes);
+    let session = RatchetSession::init_receiver(&shared_secret_bytes, bob_dh)?;
+
+    Ok((session, assign_remote_hsid.clone()))
 }
 
-/// Use this toAct as a Dialer
-/// # Errors
-/// # Panics
+/// Act as a Dialer
+/// Returns RatchetSession on success
 pub async fn dialer_actor<R, W>(
     arti_key_store: String,
     reader: &mut ReadHalf<R>,
     writer: &mut WriteHalf<W>,
-    ssk: &mut Option<[u8; 32]>,
     local_hsid: HsId,
     peer_addr: &(String, u16),
-) -> Result<(), Box<dyn Error>>
+) -> Result<RatchetSession, Box<dyn Error>>
 where
     R: AsyncReadExt,
     W: AsyncWriteExt,
@@ -284,7 +258,6 @@ where
     writer.flush().await?;
 
     // Reading listener's signature of local and remote x25519 public key
-    // and assigning in to `remote_public_key`
     let size = reader.read_u16().await? as usize;
     let mut buf = vec![0u8; size];
     let size = reader.read_exact(&mut buf).await?;
@@ -296,12 +269,10 @@ where
     let Some(remote_public_key) = remote_public_key else {
         return Err("Remote Public Key not set.".into());
     };
-    // after the we confirm we have indeed connected to the right listener,
-    // we combine the x25519 remote public key with our private key to form
-    // a diffie hellman shared secret key.
     println!("Confirmed. Assigning Shared Secret Key using Diffie Hellman key exchange.");
-    edhverify(local_private_key, remote_public_key, ssk);
-    let Some(shared_secret_key) = *ssk else {
+    let mut ssk = None;
+    edhverify(local_private_key, remote_public_key, &mut ssk);
+    let Some(shared_secret_key) = ssk else {
         return Err("Couldn't get Shared Secret Key.".into());
     };
     let signing_key = signing_key(arti_key_store).await?;
@@ -325,7 +296,7 @@ where
     );
 
     // encrypting and sending here.
-    let encrypted = encrypt(&shared_secret_key, &msg.to_vec())?;
+    let encrypted = handshake_encrypt(&shared_secret_key, &msg.to_vec())?;
     #[allow(clippy::cast_possible_truncation)]
     writer.write_u16(encrypted.len() as u16).await?;
     writer.write_all(&encrypted).await?;
@@ -336,42 +307,44 @@ where
     let size = reader.read_u16().await?;
     let mut buf = vec![0u8; size as usize];
     reader.read_exact(&mut buf).await?;
-    let decrypted = decrypt(&shared_secret_key, &buf)?;
+    let decrypted = handshake_decrypt(&shared_secret_key, &buf)?;
     let Msg::Verified = Msg::from_bytes(&decrypted) else {
         return Err("Didn't receive Approval, Aborting.".into());
     };
-    Ok(())
+
+    // Initialize ratchet session
+    // Both sides derive Bob's ratchet key from the shared secret
+    let (_, bob_dh_pub) = derive_bob_ratchet_key(&shared_secret_key);
+    let session = RatchetSession::init_sender(&shared_secret_key, &bob_dh_pub.to_bytes())?;
+
+    Ok(session)
 }
 
-/// Encrypts message before writing to writer
-/// # Errors
-/// # Panics
+/// Encrypts message before writing to writer using Double Ratchet
 pub async fn send<T>(
     writer: &mut WriteHalf<T>,
     msg: Vec<u8>,
-    ssk: Arc<RwLock<[u8; 32]>>,
+    ratchet: Arc<tokio::sync::RwLock<RatchetSession>>,
 ) -> Result<(), Box<dyn Error>>
 where
     T: AsyncReadExt + AsyncWriteExt,
 {
-    let encrypted;
-    {
-        let ssk = ssk.read().unwrap();
-        encrypted = encrypt(&ssk, &msg)?;
-    }
+    let ratchet_msg = {
+        let mut ratchet = ratchet.write().await;
+        ratchet.encrypt(&msg, b"")?
+    };
+    let serialized = bincode::serde::encode_to_vec(&ratchet_msg, bincode::config::standard())?;
     #[allow(clippy::cast_possible_truncation)]
-    writer.write_u16(encrypted.len() as u16).await?;
-    writer.write_all(&encrypted).await?;
+    writer.write_u16(serialized.len() as u16).await?;
+    writer.write_all(&serialized).await?;
     writer.flush().await?;
     Ok(())
 }
 
-/// Decrypts message before returning
-/// # Errors
-/// # Panics
+/// Decrypts message before returning using Double Ratchet
 pub async fn recv<T>(
     reader: &mut ReadHalf<T>,
-    ssk: Arc<RwLock<[u8; 32]>>,
+    ratchet: Arc<tokio::sync::RwLock<RatchetSession>>,
 ) -> Result<Vec<u8>, Box<dyn Error>>
 where
     T: AsyncReadExt + AsyncWriteExt,
@@ -380,12 +353,13 @@ where
     let mut buf = vec![0u8; size as usize];
     reader.read_exact(&mut buf).await?;
 
-    let ssk = ssk.read().unwrap();
-    let decrypted = match decrypt(&ssk, &buf) {
-        Ok(s) => s,
-        Err(e) => {
-            return Err(format!("Corrupted message.\n{e}").into());
-        }
-    };
-    Ok(decrypted)
+    let ratchet_msg: RatchetMessage =
+        bincode::serde::decode_from_slice(&buf, bincode::config::standard())
+            .map_err(|e| format!("Failed to deserialize ratchet message: {e}"))?
+            .0;
+
+    let mut ratchet = ratchet.write().await;
+    ratchet
+        .decrypt(&ratchet_msg, b"")
+        .map_err(|e| format!("Decryption failed: {e}").into())
 }
