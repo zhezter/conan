@@ -54,12 +54,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let chat = Chat::chat_to_send(&text, u32::from(idx));
                     manager.dbconn.insert_chat(chat)?;
                     let encoded = Msg::Text(text).to_vec();
-                    send(
-                        &mut target.writer,
-                        encoded,
-                        Arc::clone(&target.shared_secret_key),
-                    )
-                    .await?;
+                    let Some(ratchet) = target.ratchet_session.as_ref() else {
+                        println!("Ratchet session not established for peer {idx}.");
+                        continue;
+                    };
+                    send(&mut target.writer, encoded, Arc::clone(ratchet)).await?;
                 }
                 IPCCmd::PeerList => {
                     let mut peers = manager.dbconn.list_all_peers()?;

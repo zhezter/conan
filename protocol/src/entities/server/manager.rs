@@ -152,8 +152,6 @@ impl Manager {
                                         Ok(stream) => {
                                             let (reader, writer) = tokio::io::split(stream);
                                             let mut conn = Slave {
-                                                // ID gets changed during the connection procedure
-                                                // so it doesnt matter for now
                                                 id: 0,
                                                 reader: Some(reader),
                                                 writer,
@@ -161,7 +159,7 @@ impl Manager {
                                                 msg_sender,
                                                 response_sender,
                                                 config,
-                                                shared_secret_key: Arc::new(RwLock::new([0u8; 32])),
+                                                ratchet_session: None,
                                             };
                                             let peer_idx = match conn.connect_as_listener().await {
                                                 Ok(s) => s,
@@ -266,29 +264,26 @@ impl Manager {
                 return;
             };
             let (mut reader, mut writer) = tokio::io::split(stream);
-            let mut shared_secret_key = None;
 
             let local_hsid = service
                 .onion_address()
                 .ok_or("Onion Address Not found.")
                 .unwrap();
-            if let Err(e) = dialer_actor(
+            let session = match dialer_actor(
                 config.arti_key_store.clone(),
                 &mut reader,
                 &mut writer,
-                &mut shared_secret_key,
                 local_hsid,
                 &peer_addr,
             )
             .await
             {
-                let msg = format!("Error while Reaching out.\n{e}");
-                msg_sender.send(IPCRes::Error(msg)).unwrap();
-                return;
-            }
-            let Some(shared_secret_key) = shared_secret_key else {
-                eprintln!("Could not parse Shared Secret Key. Aborting.");
-                return;
+                Ok(s) => s,
+                Err(e) => {
+                    let msg = format!("Error while Reaching out.\n{e}");
+                    msg_sender.send(IPCRes::Error(msg)).unwrap();
+                    return;
+                }
             };
             let known = dbconn.get_peer_from_addr(&peer_addr.0).unwrap();
             let trans = dbconn.transaction().unwrap();
@@ -310,7 +305,7 @@ impl Manager {
                 config,
                 msg_sender: msg_sender.clone(),
                 response_sender,
-                shared_secret_key: Arc::new(RwLock::new(shared_secret_key)),
+                ratchet_session: Some(Arc::new(tokio::sync::RwLock::new(session))),
             };
             if conn.spawn_communication().is_ok() {
                 let mut peers = peers.write().unwrap();
