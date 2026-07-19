@@ -6,7 +6,10 @@ use safelog::DisplayRedacted;
 use std::{
     collections::HashMap,
     error::Error,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::broadcast;
@@ -34,10 +37,11 @@ pub struct Manager {
     pub tor_client: Arc<TorClient<tor_rtcompat::PreferredRuntime>>,
     /// NOTE: Only for assigning to `Slaves`, not to be used by manager itself
     pub response_sender: broadcast::Sender<(u8, Internal)>,
-
     pub stream: Option<BoxStream<'static, RendRequest>>,
     pub service: Arc<RunningOnionService>,
     pub dbconn: Connection,
+    /// States whether Server Ready or not
+    pub server_ready: AtomicBool,
 
     /// Channel for sending message to Master
     pub msg_sender: broadcast::Sender<IPCRes>,
@@ -104,6 +108,7 @@ impl Manager {
             peers: Arc::new(RwLock::new(HashMap::new())),
             stream: Some(request_stream.boxed()),
             service,
+            server_ready: AtomicBool::new(false),
             dbconn: Connection::open(&config.db_path)?,
             msg_sender,
             response_receiver,
@@ -331,6 +336,7 @@ impl Manager {
         let peers = Arc::clone(&self.peers);
         let dbconn = Connection::open(&self.config.db_path)?;
         let msg_sen = self.msg_sender.clone();
+        self.server_ready.store(true, Ordering::SeqCst);
         tokio::spawn(async move {
             while let Ok((idx, internal)) = rec.recv().await {
                 let mut res = None;

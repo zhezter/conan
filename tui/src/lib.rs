@@ -137,8 +137,9 @@ impl App {
         });
         self.active_screen = Screen::LoadingScreen {
             loading_text: "Starting Server...".into(),
-            mode: LoadingMode::ServerStarted,
+            mode: LoadingMode::StartServer,
         };
+        self.send(IPCCmd::StartServer).await?;
         while self.running {
             terminal.draw(|f| {
                 self.set_layout(f, userid);
@@ -156,26 +157,31 @@ impl App {
                 }
             }
             self.manage_keys().await?;
-            self.manage_ipc()?;
+            self.manage_ipc().await?;
         }
         terminal.clear()?;
         Ok(())
     }
 
     /// # Errors
-    pub fn manage_ipc(&mut self) -> Result<(), Box<dyn Error>> {
+    pub async fn manage_ipc(&mut self) -> Result<(), Box<dyn Error>> {
         if let Some(res) = self.try_recv()? {
             match res {
-                IPCRes::ServerStarted => {
-                    self.notification = Some(("Server Started.".into(), Instant::now()));
-                    if matches!(
-                        self.active_screen,
-                        Screen::LoadingScreen {
-                            mode: LoadingMode::ServerStarted,
-                            ..
+                IPCRes::ServerStarted(ans) => {
+                    if ans {
+                        self.notification = Some(("Server Started.".into(), Instant::now()));
+                        if matches!(
+                            self.active_screen,
+                            Screen::LoadingScreen {
+                                mode: LoadingMode::StartServer,
+                                ..
+                            }
+                        ) {
+                            self.active_screen = Screen::None;
                         }
-                    ) {
-                        self.active_screen = Screen::None;
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        self.send(IPCCmd::StartServer).await?;
                     }
                 }
                 IPCRes::Connected(_, _) => {

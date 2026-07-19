@@ -22,7 +22,7 @@ pub enum IPCCmd {
 #[derive(Debug, Clone, PartialEq, Eq, Decode, Encode, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum IPCRes {
-    ServerStarted,
+    ServerStarted(bool),
     Connected(String, u16),
     Text(u8, String),
     Notification(String),
