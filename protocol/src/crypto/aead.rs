@@ -36,8 +36,9 @@ pub enum AeadError {
 /// - `salt`: optional public entropy. Pass `None` when `input_key_material` is already uniformly
 ///   random (e.g. the output of X3DH or a chain key) — RFC 5869 §2.2 specifies that
 ///   a missing salt is equivalent to a zero-filled block of the hash output length.
-///   Pass `Some(s)` when mixing in an external root key as the salt (KDF_RK step).
+///   Pass `Some(s)` when mixing in an external root key as the salt (`KDF_RK` step).
 /// - `info`: domain separation label scoping this derivation to a specific purpose.
+/// # Errors
 pub fn hkdf_derive<const N: usize>(
     ikm: &[u8],
     salt: Option<&[u8]>,
@@ -50,16 +51,18 @@ pub fn hkdf_derive<const N: usize>(
     Ok(out)
 }
 
-/// A MessageKey is a 32-byte key material used for AEAD encryption and decryption
+/// A `MessageKey` is a 32-byte key material used for AEAD encryption and decryption
 #[derive(Clone, ZeroizeOnDrop)]
 pub struct MessageKey(KeyMaterial);
 
 impl MessageKey {
-    /// Creates a new MessageKey from a 32-byte key material.
+    #[must_use]
+    /// Creates a new `MessageKey` from a 32-byte key material.
     pub fn from_bytes(bytes: KeyMaterial) -> Self {
         Self(bytes)
     }
 
+    #[must_use]
     pub fn as_bytes(&self) -> &KeyMaterial {
         &self.0
     }
@@ -83,6 +86,7 @@ pub struct EncryptedMessage {
 // Encrypt / Decrypt
 
 /// Encrypts `plaintext` with `key` and `nonce_counter`, with no associated data.
+/// # Errors
 pub fn encrypt(
     key: &MessageKey,
     nonce_counter: u64,
@@ -92,6 +96,7 @@ pub fn encrypt(
 }
 
 /// Encrypts `plaintext` with `key` and `nonce_counter`, with associated data `aad`.
+/// # Errors
 pub fn encrypt_with_aad(
     key: &MessageKey,
     nonce_counter: u64,
@@ -117,11 +122,13 @@ pub fn encrypt_with_aad(
 }
 
 /// Decrypts `msg` with `key`, with no associated data.
+/// # Errors
 pub fn decrypt(key: &MessageKey, msg: &EncryptedMessage) -> Result<Vec<u8>, AeadError> {
     decrypt_with_aad(key, msg, b"")
 }
 
 /// Decrypts `msg` with `key` and verifies `aad`.
+/// # Errors
 pub fn decrypt_with_aad(
     key: &MessageKey,
     msg: &EncryptedMessage,

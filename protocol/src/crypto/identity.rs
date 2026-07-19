@@ -1,8 +1,9 @@
 //! Identity management utilities for conan.
 
 use super::aead::{KeyMaterial, hkdf_derive};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand_core::OsRng;
+use ed25519_dalek::{
+    Signature, Signer, SigningKey, Verifier, VerifyingKey, ed25519::signature::rand_core::OsRng,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::ZeroizeOnDrop;
@@ -41,6 +42,7 @@ pub struct PublicIdentity {
 }
 
 impl PublicIdentity {
+    #[must_use]
     /// Constructs a [`PublicIdentity`] from a [`VerifyingKey`].
     pub fn from_verifying_key(key: &VerifyingKey) -> Self {
         let bytes = key.to_bytes();
@@ -53,6 +55,7 @@ impl PublicIdentity {
     }
 
     /// Recovers the [`VerifyingKey`] from the address string.
+    /// # Errors
     pub fn to_verifying_key(&self) -> Result<VerifyingKey, IdentityError> {
         let encoded = self
             .address
@@ -99,6 +102,7 @@ pub struct Identity {
 
 impl Identity {
     /// Generates a new [`Identity`] using the OS random number generator.
+    /// # Errors
     pub fn generate() -> Result<Self, IdentityError> {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
@@ -110,6 +114,7 @@ impl Identity {
     }
 
     /// Restores an [`Identity`] from a previously exported secret key.
+    /// # Errors
     pub fn from_secret_key(bytes: KeyMaterial) -> Result<Self, IdentityError> {
         let signing_key = SigningKey::from_bytes(&bytes);
         let verifying_key = signing_key.verifying_key();
@@ -120,6 +125,7 @@ impl Identity {
         })
     }
 
+    #[must_use]
     /// Exports the signing key bytes, wrapped in [`zeroize::Zeroizing`].
     ///
     /// The returned value will be zeroed when dropped. Store immediately
@@ -128,12 +134,14 @@ impl Identity {
         zeroize::Zeroizing::new(self.signing_key.to_bytes())
     }
 
+    #[must_use]
     /// Signs `message` with this identity's private key.
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.signing_key.sign(message)
     }
 
     /// Verifies `signature` over `message` against `public`.
+    /// # Errors
     pub fn verify(
         public: &PublicIdentity,
         message: &[u8],
@@ -144,6 +152,7 @@ impl Identity {
             .map_err(|_| IdentityError::InvalidSignature)
     }
 
+    #[must_use]
     /// Derives an X25519 static secret from this Ed25519 signing key.
     ///
     /// # Why HKDF here?
@@ -155,12 +164,12 @@ impl Identity {
     ///
     /// # HKDF parameters
     ///
-    /// - `ikm`  = Ed25519 signing key bytes (32 bytes of strong uniform entropy →
-    ///            no external salt needed; the IKM itself is the entropy source).
-    /// - `salt` = `b""` (empty → HKDF uses a zero-filled block internally, per RFC 5869
-    ///            §2.2, which is correct when the IKM is already uniformly random).
+    /// - `ikm`  = Ed25519 signing key bytes (32 bytes of strong uniform entropy → no external salt needed; the IKM itself is the entropy source).
+    /// - `salt` = `b""` (empty → HKDF uses a zero-filled block internally, per RFC 5869 §2.2, which is correct when the IKM is already uniformly random).
     /// - `info` = `b"atrio-v1-ed25519-to-x25519"` (domain label scoping this
-    ///            derivation to this protocol and purpose).
+    ///
+    /// derivation to this protocol and purpose).
+    /// # Panics
     pub fn to_x25519_secret(&self) -> x25519_dalek::StaticSecret {
         let signing_key_bytes = self.signing_key.to_bytes();
         let derived = hkdf_derive::<32>(&signing_key_bytes, None, b"conan-v1-ed25519-to-x25519")
@@ -174,6 +183,7 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use x25519_dalek::PublicKey;
 
     #[test]
     fn generate_returns_valid_address() {
@@ -212,7 +222,6 @@ mod tests {
         let s1 = id.to_x25519_secret();
         let s2 = id.to_x25519_secret();
         // comparation via public key bytes
-        use x25519_dalek::PublicKey;
         assert_eq!(
             PublicKey::from(&s1).to_bytes(),
             PublicKey::from(&s2).to_bytes()
@@ -223,7 +232,6 @@ mod tests {
     fn x25519_differs_from_ed25519_bytes() {
         let id = Identity::generate().unwrap();
         let x_secret = id.to_x25519_secret();
-        use x25519_dalek::PublicKey;
         let x_pub = PublicKey::from(&x_secret).to_bytes();
         let ed_pub = id.public.to_verifying_key().unwrap().to_bytes();
         assert_ne!(x_pub, ed_pub);
@@ -233,7 +241,7 @@ mod tests {
     fn rejects_missing_prefix() {
         let fake = PublicIdentity {
             address: "notconan:abc123".into(),
-            fingerprint: "".into(),
+            fingerprint: String::new(),
         };
         assert!(fake.to_verifying_key().is_err());
     }

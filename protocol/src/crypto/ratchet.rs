@@ -7,7 +7,7 @@
 use super::aead::{
     EncryptedMessage, KeyMaterial, MessageKey, decrypt_with_aad, encrypt_with_aad, hkdf_derive,
 };
-use rand_core::OsRng;
+use ed25519_dalek::ed25519::signature::rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -87,7 +87,7 @@ const INFO_INIT_HKR: &[u8] = b"conan-v1-init-hkr";
 /// prevent a malicious sender from causing excessive storage.
 const MAX_SKIP: u64 = 1000;
 
-/// Hard cap on total stored skipped keys across all chains (DoS guard).
+/// Hard cap on total stored skipped keys across all chains (DOS guard).
 const MAX_SKIPPED_KEYS: usize = 2000;
 
 // HeaderKey
@@ -127,7 +127,7 @@ impl ChainKey {
     /// Two separate HKDF invocations with different `info` values give us two
     /// independent 32-byte outputs from the same IKM without any length extension
     /// concerns. The old chain key bytes are overwritten before the new value is
-    /// stored; ZeroizeOnDrop cleans the struct on final drop.
+    /// stored; `ZeroizeOnDrop` cleans the struct on final drop.
     fn advance(&mut self) -> Result<MessageKey, RatchetError> {
         let msg_bytes = hkdf_derive::<32>(&self.0, None, INFO_MESSAGE)?;
         let next_bytes = hkdf_derive::<32>(&self.0, None, INFO_CHAIN)?;
@@ -181,7 +181,7 @@ impl RatchetHeader {
 
     /// Serialises the header to a fixed 48-byte sequence.
     ///
-    /// Layout: [dh_pub (32)] | [prev_chain_length (8, Big Endian)] | [message_number (8, Big Endian)]
+    /// Layout: [`dh_pub` (32)] | [`prev_chain_length` (8, Big Endian)] | [`message_number` (8, Big Endian)]
     /// Fixed-width fields make the encoding unambiguous without a length prefix.
     pub(crate) fn to_bytes(&self) -> [u8; 48] {
         let mut buf = [0u8; 48];
@@ -295,6 +295,8 @@ pub struct RatchetSession {
 }
 
 impl RatchetSession {
+    /// Initialize Ratchet Session for Sending
+    /// # Errors
     pub fn init_sender(
         shared_secret: &KeyMaterial,
         remote_dh_pub_bytes: &KeyMaterial,
@@ -334,6 +336,8 @@ impl RatchetSession {
         })
     }
 
+    /// Initialize Ratchet Session for Receiver
+    /// # Errors
     pub fn init_receiver(
         shared_secret: &KeyMaterial,
         local_dh_secret: StaticSecret,
@@ -365,6 +369,8 @@ impl RatchetSession {
         })
     }
 
+    #[must_use]
+    /// Returns local Ephemaral public key
     pub fn local_public_key(&self) -> KeyMaterial {
         self.local_dh_pub.to_bytes()
     }
@@ -377,6 +383,7 @@ impl RatchetSession {
     /// 2. Build the ratchet header (local DH public key, previous chain length, message number).
     /// 3. Encrypt the header with the current send header key (hides metadata from observers).
     /// 4. Encrypt the payload with the message key, binding it to the associated data and header.
+    /// # Errors
     pub fn encrypt(
         &mut self,
         plaintext: &[u8],
@@ -428,6 +435,7 @@ impl RatchetSession {
     ///    perform a DH ratchet step to derive new chains.
     /// 4. Skip any remaining message keys up to the target message number.
     /// 5. Advance the receiving chain to derive the message key and decrypt.
+    /// # Errors
     pub fn decrypt(
         &mut self,
         msg: &RatchetMessage,
@@ -448,8 +456,7 @@ impl RatchetSession {
         // Step 3: Detect if the sender performed a DH ratchet step (new DH public key).
         let is_new_dh_key = self
             .remote_dh_pub
-            .map(|p| p.to_bytes() != header.dh_pub)
-            .unwrap_or(true);
+            .is_none_or(|p| p.to_bytes() != header.dh_pub);
 
         if is_new_dh_key {
             // Skip any remaining messages from the old sending chain before ratcheting.
@@ -488,10 +495,9 @@ impl RatchetSession {
 
         for header_key in candidates.iter().flatten() {
             if let Ok(bytes) = decrypt_with_aad(&header_key.as_message_key(), encrypted_header, &[])
+                && let Some(header) = RatchetHeader::from_bytes(&bytes)
             {
-                if let Some(header) = RatchetHeader::from_bytes(&bytes) {
-                    return Ok((header, header_key.0));
-                }
+                return Ok((header, header_key.0));
             }
         }
         Err(RatchetError::HeaderDecryptionFailed)
@@ -537,7 +543,7 @@ impl RatchetSession {
     /// out-of-order delivery. Called when we receive a message with a higher
     /// message number than expected (e.g. messages arrived out of order over Tor).
     ///
-    /// Each stored key is indexed by (header_key, message_number) so it can be
+    /// Each stored key is indexed by (`header_key`, `message_number`) so it can be
     /// retrieved when the delayed message eventually arrives.
     fn skip_message_keys(&mut self, until: u64) -> Result<(), RatchetError> {
         if until > self.recv_count + MAX_SKIP {
@@ -545,11 +551,7 @@ impl RatchetSession {
         }
 
         if let Some(recv_chain) = self.recv_chain.as_mut() {
-            let header_key = self
-                .header_key_recv
-                .as_ref()
-                .map(|hk| hk.0)
-                .unwrap_or([0u8; 32]);
+            let header_key = self.header_key_recv.as_ref().map_or([0u8; 32], |hk| hk.0);
 
             while self.recv_count < until {
                 let message_key = recv_chain.advance()?;
@@ -566,10 +568,11 @@ impl RatchetSession {
     /// data with the encrypted header. This binds the payload to the specific header,
     /// preventing an attacker from substituting a different header.
     ///
-    /// Layout: [ad_len (4, Big Endian)] | [ad] | [nonce (8, Big Endian)] | [ciphertext]
+    /// Layout: [`ad_len` (4, Big Endian)] | [ad] | [nonce (8, Big Endian)] | [ciphertext]
     fn build_aad(associated_data: &[u8], encrypted_header: &EncryptedMessage) -> Vec<u8> {
         let mut buffer =
             Vec::with_capacity(4 + associated_data.len() + 8 + encrypted_header.ciphertext.len());
+        #[allow(clippy::cast_possible_truncation)]
         buffer.extend_from_slice(&(associated_data.len() as u32).to_be_bytes());
         buffer.extend_from_slice(associated_data);
         buffer.extend_from_slice(&encrypted_header.nonce.to_be_bytes());
@@ -577,6 +580,7 @@ impl RatchetSession {
         buffer
     }
 
+    #[must_use]
     /// Number of skipped message keys currently in the store.
     pub fn skipped_keys_count(&self) -> usize {
         self.skipped.len()

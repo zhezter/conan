@@ -42,6 +42,8 @@ fn handshake_decrypt(
 }
 
 /// Used to retrieve signing key for self tor server
+/// # Errors
+/// # Panics
 pub async fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<dyn Error>> {
     let mut key_store_path = arti_key_store;
     key_store_path.push_str(ARTI_PRIVATE_KEY);
@@ -86,6 +88,7 @@ pub async fn signing_key(arti_key_store: String) -> Result<ExpandedKeypair, Box<
 }
 
 /// Performs Curve25519 Handshake
+/// # Errors
 pub fn x25519_handshake(
     remote_public_key: &mut Option<PublicKey>,
     local_public_key: PublicKey,
@@ -123,9 +126,11 @@ pub fn edhverify(
     *ssk = Some(*shared_secret_key.as_bytes());
 }
 
+#[must_use]
 /// Derive a ratchet key pair from the shared secret via HKDF.
 /// Both sides derive the same Bob ratchet key from the shared secret,
 /// so Alice can compute Bob's ratchet public key independently.
+/// # Panics
 pub fn derive_bob_ratchet_key(shared_secret: &[u8; 32]) -> (StaticSecret, PublicKey) {
     use crate::crypto::aead::hkdf_derive;
     let derived = hkdf_derive::<32>(shared_secret, None, b"conan-v1-bob-ratchet")
@@ -136,7 +141,9 @@ pub fn derive_bob_ratchet_key(shared_secret: &[u8; 32]) -> (StaticSecret, Public
 }
 
 /// Perform function of listener once called
-/// Returns (RatchetSession, remote_hsid) on success
+/// Returns (`RatchetSession`, `remote_hsid`) on success
+/// # Errors
+/// # Panics
 pub async fn listener_actor(
     arti_key_store: String,
     reader: &mut ReadHalf<DataStream>,
@@ -235,7 +242,9 @@ pub async fn listener_actor(
 }
 
 /// Act as a Dialer
-/// Returns RatchetSession on success
+/// Returns `RatchetSession` on success
+/// # Panics
+/// # Errors
 pub async fn dialer_actor<R, W>(
     arti_key_store: String,
     reader: &mut ReadHalf<R>,
@@ -321,6 +330,7 @@ where
 }
 
 /// Encrypts message before writing to writer using Double Ratchet
+/// # Errors
 pub async fn send<T>(
     writer: &mut WriteHalf<T>,
     msg: Vec<u8>,
@@ -342,6 +352,7 @@ where
 }
 
 /// Decrypts message before returning using Double Ratchet
+/// # Errors
 pub async fn recv<T>(
     reader: &mut ReadHalf<T>,
     ratchet: Arc<tokio::sync::RwLock<RatchetSession>>,
